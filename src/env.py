@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import copy
 import functools
 from collections import deque
 from dataclasses import dataclass
+from enum import IntEnum
 from typing import Optional
 
 import numpy as np
@@ -11,58 +13,145 @@ from pettingzoo import ParallelEnv
 
 UP, DOWN, LEFT, RIGHT, STAY, PICK, DROP = range(7)
 N_ACTIONS = 7
-MOVES = {UP: (-1, 0), DOWN: (1, 0), LEFT: (0, -1), RIGHT: (0, 1)}  # (dy, dx)
+MOVES = {UP: (-1, 0), DOWN: (1, 0), LEFT: (0, -1), RIGHT: (0, 1)}
 PERSIST, TEMP, MAL = 0, 1, 2
 TYPE_NAMES = ("persistent", "temporary", "malicious")
-N_LOCAL_CH = 6   # obstacle, persistent, temporary(remaining life), malicious, depot, other agents
-N_TEAM_CH = 6    # known, known-obstacle, persistent, temporary(remaining life), malicious, agents
-N_SCALARS = 12
-HANDLING_TIME = 2  # pick + drop steps, used in the slack estimate
+N_LOCAL_CH = 6
+N_TEAM_CH = 7
+N_SCALARS = 23
+HANDLING_TIME = 2
+
+
+class Status(IntEnum):
+    AVAILABLE = 0
+    CLAIMED = 1
+    CARRIED = 2
+    DELIVERED = 3
+    EXPIRED = 4
+    DISPOSED = 5
+
+
+class Mode(IntEnum):
+    EXPLORE = 0
+    PURSUE = 1
+    RETURN = 2
+
+
+@dataclass
+class Item:
+    id: int
+    type: int
+    pos: tuple
+    spawn: int
+    expiry: float
+    value: float
+    status: Status = Status.AVAILABLE
+    seen: bool = False
+    discovered_by: Optional[int] = None
+    discovered_t: Optional[int] = None
+    claimed_by: Optional[int] = None
+    collected_by: Optional[int] = None
+    pickup_t: Optional[int] = None
+    end_t: Optional[int] = None
 
 
 @dataclass
 class EnvConfig:
+    # world
     height: int = 20
     width: int = 20
     n_agents: int = 4
     obstacle_density: tuple = (0.10, 0.25)
-    min_free_frac: float = 0.55             
-    view_radius: int = 3                    # local window is (2r+1) x (2r+1)
-    start_radius: int = 4                   # agents start within this path distance of depot
-    # items
+    min_free_frac: float = 0.55
+    view_radius: int = 3
+    start_radius: int = 4
+    # checkpoint
+    checkpoint_xy: Optional[tuple] = None
+    checkpoint_stacking: bool = True
+    checkpoint_service_rate: Optional[int] = None
+    service_priority: str = "urgency"
+    # items — initial counts
     n_persistent: int = 10
     n_malicious: int = 3
-    temp_spawn_prob: float = 0.04           # per step
-    temp_life_range: tuple = (40, 80)       # lifetime in steps
+    n_temp_initial: int = 0
+    # items — dynamic spawning (per-step probability, 0 disables)
+    temp_spawn_prob: float = 0.04
+    persist_spawn_prob: float = 0.0
+    mal_spawn_prob: float = 0.0
+    # items — caps & behaviour
+    temp_life_range: tuple = (40, 80)
     max_temp_active: int = 5
-    forbid_malicious_pickup: bool = False   # True -> hard action mask instead of penalty
+    max_persist_active: int = 30
+    max_mal_active: int = 10
+    forbid_malicious_pickup: bool = False
+    mal_on_pickup: str = "destroy"
+    temp_expires_while_carried: bool = True
+    # coordination rules
+    tiebreak: str = "index"
+    claim_blocks_pickup: bool = False
+    slack_uses_true_path: bool = False
+    # information sharing
+    info_mode: str = "shared"  # "shared" | "private" | "window"
     # episode
     max_steps: int = 300
-    target_deliveries: Optional[int] = None  # terminate early after X valid deliveries
+    target_deliveries: Optional[int] = None
     # rewards
-    v_low: float = 1.0        # persistent delivery
-    v_high: float = 5.0       # temporary delivery (before expiry)
-    p_mal: float = 2.0        # penalty for picking up malicious item
-    c_time: float = 0.01      # per-step cost (team)
+    v_low: float = 1.0
+    v_high: float = 5.0
+    p_mal: float = 2.0
+    c_time: float = 0.01
     c_collision: float = 0.05
     c_invalid: float = 0.02
-    alpha_map: float = 0.5    # x fraction of newly revealed map cells
-    b_discover: tuple = (0.05, 0.20, 0.0)  # first-discovery bonus by item type
-    coord_penalty: float = 0.1             # crowding on the same item (see _coordination)
+    alpha_map: float = 0.5
+    b_discover: tuple = (0.05, 0.20, 0.0)
+    coord_penalty: float = 0.1
     crowd_radius: int = 2
+    # discovery accounting
+    count_initial_discovery: bool = False
+
+    def __post_init__(self):
+        assert self.mal_on_pickup in ("destroy", "carry")
+        assert self.service_priority in ("urgency", "index", "random")
+        assert self.tiebreak in ("index", "random")
+        assert self.info_mode in ("shared", "private", "window")
+        assert self.checkpoint_service_rate is None or self.checkpoint_service_rate >= 1
+        if self.checkpoint_xy is not None:
+            x, y = self.checkpoint_xy
+            assert 0 <= x < self.width and 0 <= y < self.height, "checkpoint_xy outside the grid"
+
+
+_C_OBST = (0.25, 0.25, 0.28)
+_C_UNKNOWN = (0.12, 0.12, 0.14)
+_C_CP = (0.1, 0.65, 0.3)
+_C_CLAIM = (0.8, 0.0, 0.8)
+_C_SELF = (1.0, 0.9, 0.0)
+_C_AGENT_OTHER = (0.15, 0.3, 0.9)
+_ITEM_COL = {PERSIST: (0.95, 0.85, 0.2), TEMP: (1.0, 0.5, 0.0), MAL: (0.85, 0.1, 0.1)}
+_AGENT_COLS = [(0.15, 0.3, 0.9), (0.0, 0.6, 0.6), (0.6, 0.2, 0.8), (0.1, 0.5, 0.1),
+               (0.5, 0.3, 0.0), (0.9, 0.3, 0.6), (0.3, 0.3, 0.3), (0.0, 0.0, 0.6)]
 
 
 class SwarmSearchEnv(ParallelEnv):
-    metadata = {"name": "swarm_search_v0", "render_modes": ["ansi", "rgb_array"]}
+    metadata = {"name": "swarm_search_v1", "render_modes": ["ansi", "rgb_array"]}
 
     def __init__(self, config: Optional[EnvConfig] = None, render_mode: Optional[str] = None):
         self.cfg = config or EnvConfig()
         self.render_mode = render_mode
         self.possible_agents = [f"robot_{i}" for i in range(self.cfg.n_agents)]
+        self._idx = {a: i for i, a in enumerate(self.possible_agents)}
         self.agents = []
         self.rng = np.random.default_rng()
         self._life_max = float(self.cfg.temp_life_range[1])
 
+    @property
+    def checkpoint_xy(self):
+        return (self.checkpoint[1], self.checkpoint[0])
+
+    @property
+    def depot(self):
+        return self.checkpoint
+
+    # ---------------------------------------------------------------- spaces
     @functools.lru_cache(maxsize=None)
     def observation_space(self, agent):
         c = self.cfg
@@ -80,9 +169,10 @@ class SwarmSearchEnv(ParallelEnv):
     @property
     def state_space(self):
         c = self.cfg
-        n = c.height * c.width * (1 + 1 + 3 + 1 + 1) + c.n_agents * 3 + 2
+        n = c.height * c.width * 7 + c.n_agents * 4 + 2
         return spaces.Box(-1.0, 1.0, (n,), np.float32)
 
+    # ---------------------------------------------------------- map building
     @staticmethod
     def _bfs(grid: np.ndarray, start) -> np.ndarray:
         H, W = grid.shape
@@ -100,138 +190,269 @@ class SwarmSearchEnv(ParallelEnv):
 
     def _generate_map(self):
         c = self.cfg
-        need = c.n_agents + c.n_persistent + c.n_malicious + c.max_temp_active + 1
+        need = (c.n_agents + c.n_persistent + c.n_malicious
+                + max(c.n_temp_initial, c.max_temp_active) + 1)
+        fixed = None if c.checkpoint_xy is None else (int(c.checkpoint_xy[1]), int(c.checkpoint_xy[0]))
         for _ in range(1000):
             dens = self.rng.uniform(*c.obstacle_density)
             grid = self.rng.random((c.height, c.width)) < dens
-            free = np.argwhere(~grid)
-            if len(free) == 0:
-                continue
-            depot = tuple(int(v) for v in free[self.rng.integers(len(free))])
-            dist = self._bfs(grid, depot)
+            if fixed is not None:
+                grid[fixed] = False
+                cp = fixed
+            else:
+                free = np.argwhere(~grid)
+                if len(free) == 0:
+                    continue
+                cp = tuple(int(v) for v in free[self.rng.integers(len(free))])
+            dist = self._bfs(grid, cp)
             reach = dist >= 0
             if reach.sum() < max(c.min_free_frac * c.height * c.width, need):
                 continue
-            self.grid = grid | ~reach          # wall off unreachable pockets
-            self.depot = depot
-            self.depot_dist = dist
+            self.grid = grid | ~reach
+            self.checkpoint = cp
+            self.checkpoint_dist = dist
             self.free_cells = np.argwhere(~self.grid)
             return
         raise RuntimeError("Could not generate a valid map; relax obstacle_density/min_free_frac.")
 
-    # ------------------------------------------------------------------ items
-    def _new_item(self, typ, pos, expiry=np.inf):
-        return {"type": typ, "pos": pos, "spawn": self.t, "expiry": expiry, "seen": False}
+    # --------------------------------------------------------------- items
+    def _new_item(self, typ, pos, expiry=np.inf) -> Item:
+        c = self.cfg
+        value = {PERSIST: c.v_low, TEMP: c.v_high, MAL: -c.p_mal}[typ]
+        it = Item(id=self._next_id, type=typ, pos=pos, spawn=self.t, expiry=expiry, value=value)
+        self._next_id += 1
+        self.objects[it.id] = it
+        return it
 
     def _random_free_cell(self, exclude):
         for _ in range(200):
             y, x = self.free_cells[self.rng.integers(len(self.free_cells))]
             p = (int(y), int(x))
-            if p != self.depot and p not in exclude:
+            if p != self.checkpoint and p not in exclude:
                 return p
         return None
 
-    def _spawn_temp(self):
-        pos = self._random_free_cell(self.active)
+    def _spawn_item(self, typ) -> bool:
+        """Spawn a single item of *typ* at a random free cell. Returns True on success."""
+        pos = self._random_free_cell(set(self.active) | set(self.pos))
         if pos is None:
-            return
-        lo, hi = self.cfg.temp_life_range
-        life = int(self.rng.integers(lo, hi + 1))
-        self.active[pos] = self._new_item(TEMP, pos, self.t + life)
+            return False
+        if typ == TEMP:
+            lo, hi = self.cfg.temp_life_range
+            life = int(self.rng.integers(lo, hi + 1))
+            self.active[pos] = self._new_item(TEMP, pos, self.t + life)
+        else:
+            self.active[pos] = self._new_item(typ, pos)
+        return True
+
+    def _spawn_temp(self) -> bool:
+        return self._spawn_item(TEMP)
+
+    def _count_type(self, typ) -> int:
+        """Count live items of *typ* (on the ground + carried)."""
+        n = sum(1 for it in self.active.values() if it.type == typ)
+        return n + sum(1 for it in self.carry if it is not None and it.type == typ)
 
     def _n_temp_alive(self):
-        n = sum(1 for it in self.active.values() if it["type"] == TEMP)
-        return n + sum(1 for it in self.carry if it is not None and it["type"] == TEMP)
+        return self._count_type(TEMP)
 
-    # ------------------------------------------------------------------ reset
+    # ---------------------------------------------------------------- reset
     def reset(self, seed=None, options=None):
         c = self.cfg
+        n = c.n_agents
         if seed is not None:
             self.rng = np.random.default_rng(seed)
         self.agents = list(self.possible_agents)
         self._generate_map()
         self.t = 0
+        self._next_id = 0
+        self.objects = {}
         self.known = np.zeros((c.height, c.width), dtype=bool)
-        self.carry = [None] * c.n_agents
+        self._agent_known = [np.zeros((c.height, c.width), dtype=bool) for _ in range(n)]
+        self._seen_by = [set() for _ in range(n)]
+        self.carry = [None] * n
+        self.target = [None] * n
         self.active = {}
         self.stats = {
             "deliveries": 0, "delivered_value": 0.0,
             "delivered_by_type": [0, 0, 0], "expired_by_type": [0, 0, 0],
-            "malicious_picked": 0, "temp_spawned": 0, "collisions": 0,
-            "discovered_by_type": [0, 0, 0], "ep_return": 0.0,
+            "expired_after_discovery": 0, "expired_while_carried": 0,
+            "malicious_picked": 0, "disposed": 0,
+            "pickups": 0, "pickup_by_type": [0, 0, 0],
+            "temp_spawned": 0, "persist_spawned": 0, "mal_spawned": 0,
+            "collisions": 0,
+            "discovered_by_type": [0, 0, 0], "discovered_by_agent": [0] * n,
+            "pickup_conflicts": 0, "service_denied": 0,
+            "claim_conflicts": 0, "invalid_targets": 0,
+            "delivery_log": [],
+            "carrying_per_step": [],
+            "steps_returning": [0] * n,
+            "steps_waiting": [0] * n,
+            "distance": [0] * n,
+            "ep_return": 0.0,
         }
 
-        # agent starts near depot (not on it)
+        # place agents near the checkpoint
         R = c.start_radius
-        d = self.depot_dist
+        d = self.checkpoint_dist
         cand = np.argwhere((d > 0) & (d <= R))
-        while len(cand) < c.n_agents:
+        while len(cand) < n:
             R += 1
             cand = np.argwhere((d > 0) & (d <= R))
-        idx = self.rng.choice(len(cand), c.n_agents, replace=False)
+        idx = self.rng.choice(len(cand), n, replace=False)
         self.pos = [tuple(int(v) for v in cand[i]) for i in idx]
 
+        # spawn initial objects
         taken = set(self.pos)
-        for typ, n in ((PERSIST, c.n_persistent), (MAL, c.n_malicious)):
-            for _ in range(n):
+        for typ, k in ((PERSIST, c.n_persistent), (MAL, c.n_malicious)):
+            for _ in range(k):
                 p = self._random_free_cell(taken | set(self.active))
                 if p is not None:
                     self.active[p] = self._new_item(typ, p)
+        for _ in range(c.n_temp_initial):
+            self._spawn_item(TEMP)
 
-        self._update_visibility()  # initial discoveries are free
+        # initial visibility
+        _, init_items = self._update_visibility()
+        if c.count_initial_discovery:
+            for it in init_items:
+                self.stats["discovered_by_type"][it.type] += 1
+                if it.discovered_by is not None:
+                    self.stats["discovered_by_agent"][it.discovered_by] += 1
+
         return self._observations(), self._infos({})
 
-    # ------------------------------------------------------------- visibility
+    # ----------------------------------------------------------- visibility
     def _update_visibility(self):
-        """Reveal windows around every robot (team shares the map).
+        """Reveal the Chebyshev window around every robot.
+        Updates both the team-wide ``self.known`` and per-agent
+        ``self._agent_known`` / ``self._seen_by`` maps.
         Returns (fraction of newly revealed cells, list of newly discovered items)."""
         c = self.cfg
         before = int(self.known.sum())
         r = c.view_radius
-        for (y, x) in self.pos:
-            self.known[max(0, y - r): y + r + 1, max(0, x - r): x + r + 1] = True
+        for i, (y, x) in enumerate(self.pos):
+            slc = (slice(max(0, y - r), y + r + 1), slice(max(0, x - r), x + r + 1))
+            self.known[slc] = True
+            self._agent_known[i][slc] = True
         new_frac = (int(self.known.sum()) - before) / (c.height * c.width)
         new_items = []
-        for p, it in self.active.items():
-            if not it["seen"] and self.known[p]:
-                it["seen"] = True
-                new_items.append(it)
+        for i, (y, x) in enumerate(self.pos):
+            for p, it in self.active.items():
+                if max(abs(p[0] - y), abs(p[1] - x)) <= r:
+                    self._seen_by[i].add(it.id)
+                    if not it.seen:
+                        it.seen, it.discovered_by, it.discovered_t = True, i, self.t
+                        new_items.append(it)
         return new_frac, new_items
 
-    # ------------------------------------------------------------------- step
-    def step(self, actions):
+    # ---------------------------------------------------- claims / targets
+    def _order(self, idxs, mode):
+        idxs = sorted(idxs)
+        if mode == "random" and len(idxs) > 1:
+            return [int(v) for v in self.rng.permutation(idxs)]
+        return idxs
+
+    def _clear_claim(self, it: Item):
+        j = it.claimed_by
+        if j is not None:
+            if self.target[j] == it.id:
+                self.target[j] = None
+            it.claimed_by = None
+            if it.status == Status.CLAIMED:
+                it.status = Status.AVAILABLE
+
+    def _release(self, i):
+        tgt = self.target[i]
+        if tgt is not None:
+            self._clear_claim(self.objects[tgt])
+        self.target[i] = None
+
+    def _resolve_target(self, v) -> Optional[Item]:
+        if isinstance(v, (int, np.integer)):
+            return self.objects.get(int(v))
+        y, x = v
+        return self.active.get((int(y), int(x)))
+
+    def _apply_targets(self, targets):
+        reqs = []
+        for a, v in targets.items():
+            if a not in self._idx:
+                continue
+            if v is None:
+                self._release(self._idx[a])
+            else:
+                reqs.append(self._idx[a])
+        for i in self._order(reqs, self.cfg.tiebreak):
+            it = self._resolve_target(targets[self.possible_agents[i]])
+            if (it is None or self.carry[i] is not None or it.type == MAL or not it.seen
+                    or it.status not in (Status.AVAILABLE, Status.CLAIMED)):
+                self.stats["invalid_targets"] += 1
+                continue
+            if it.claimed_by == i:
+                continue
+            if it.claimed_by is not None:
+                self.stats["claim_conflicts"] += 1
+                continue
+            self._release(i)
+            it.status, it.claimed_by, self.target[i] = Status.CLAIMED, i, it.id
+
+    # ---------------------------------------------------------------- step
+    def step(self, actions, targets=None):
         c = self.cfg
         assert self.agents, "call reset() first"
         comp = dict(time=-c.c_time, collision=0.0, invalid=0.0, map=0.0,
                     discover=0.0, delivery=0.0, coordination=0.0)
         n_inv = 0
 
-        acts = [int(actions.get(a, STAY)) for a in self.possible_agents]
+        acts = []
+        for a in self.possible_agents:
+            v = int(actions.get(a, STAY))
+            if not 0 <= v < N_ACTIONS:
+                n_inv += 1
+                v = STAY
+            acts.append(v)
 
-        # 1) pick / drop
+        # 0) bookkeeping
+        self.stats["carrying_per_step"].append(sum(it is not None for it in self.carry))
+        for i, it in enumerate(self.carry):
+            if it is not None:
+                self.stats["steps_returning"][i] += 1
+        if targets:
+            self._apply_targets(targets)
+
+        # 1a) pickups
+        pickers = {}
         for i, a in enumerate(acts):
-            if a == PICK:
-                if not self._can_pick(i):
-                    n_inv += 1
-                    continue
-                it = self.active.pop(self.pos[i])
-                if it["type"] == MAL:
-                    comp["delivery"] -= c.p_mal           # item is destroyed
-                    self.stats["malicious_picked"] += 1
-                else:
-                    self.carry[i] = it
-            elif a == DROP:
-                if not self._can_drop(i):
-                    n_inv += 1
-                    continue
-                it, self.carry[i] = self.carry[i], None
-                val = c.v_high if it["type"] == TEMP else c.v_low
-                comp["delivery"] += val
-                self.stats["deliveries"] += 1
-                self.stats["delivered_value"] += val
-                self.stats["delivered_by_type"][it["type"]] += 1
+            if a != PICK:
+                continue
+            if self._can_pick(i):
+                pickers.setdefault(self.pos[i], []).append(i)
+            else:
+                n_inv += 1
+        for pos, idxs in pickers.items():
+            winner = idxs[0] if len(idxs) == 1 else self._order(idxs, c.tiebreak)[0]
+            self.stats["pickup_conflicts"] += len(idxs) - 1
+            comp["delivery"] += self._do_pickup(winner, self.active.pop(pos))
 
-        # 2) movement with conflict resolution
+        # 1b) deliveries
+        droppers = []
+        for i, a in enumerate(acts):
+            if a != DROP:
+                continue
+            if self._can_drop(i):
+                droppers.append(i)
+            else:
+                n_inv += 1
+        served = self._select_served(droppers)
+        for i in droppers:
+            if i not in served:
+                self.stats["service_denied"] += 1
+                self.stats["steps_waiting"][i] += 1
+        for i in served:
+            comp["delivery"] += self._do_delivery(i)
+
+        # 2) movement
         n_col = self._move(acts)
         comp["collision"] = -c.c_collision * n_col
         comp["invalid"] = -c.c_invalid * n_inv
@@ -239,22 +460,41 @@ class SwarmSearchEnv(ParallelEnv):
 
         # 3) time, expiry, spawning
         self.t += 1
-        for p in [p for p, it in self.active.items() if it["expiry"] <= self.t]:
-            self.stats["expired_by_type"][self.active.pop(p)["type"]] += 1
+        if not c.temp_expires_while_carried:
+            for it in self.carry:
+                if it is not None and it.type == TEMP:
+                    it.expiry += 1
+        for p in [p for p, it in self.active.items() if it.expiry <= self.t]:
+            it = self.active.pop(p)
+            self._clear_claim(it)
+            self._expire(it)
         for i, it in enumerate(self.carry):
-            if it is not None and it["expiry"] <= self.t:      # expired while carried
-                self.stats["expired_by_type"][it["type"]] += 1
+            if it is not None and it.expiry <= self.t:
+                self.stats["expired_while_carried"] += 1
+                self._expire(it)
                 self.carry[i] = None
-        if self._n_temp_alive() < c.max_temp_active and self.rng.random() < c.temp_spawn_prob:
-            self._spawn_temp()
-            self.stats["temp_spawned"] += 1
 
-        # 4) discovery (counted once per cell / item for the whole team)
+        # dynamic spawning — all three types
+        if self._count_type(TEMP) < c.max_temp_active and self.rng.random() < c.temp_spawn_prob:
+            if self._spawn_item(TEMP):
+                self.stats["temp_spawned"] += 1
+        if c.persist_spawn_prob > 0 and self._count_type(PERSIST) < c.max_persist_active:
+            if self.rng.random() < c.persist_spawn_prob:
+                if self._spawn_item(PERSIST):
+                    self.stats["persist_spawned"] += 1
+        if c.mal_spawn_prob > 0 and self._count_type(MAL) < c.max_mal_active:
+            if self.rng.random() < c.mal_spawn_prob:
+                if self._spawn_item(MAL):
+                    self.stats["mal_spawned"] += 1
+
+        # 4) discovery
         new_frac, new_items = self._update_visibility()
         comp["map"] = c.alpha_map * new_frac
         for it in new_items:
-            comp["discover"] += c.b_discover[it["type"]]
-            self.stats["discovered_by_type"][it["type"]] += 1
+            comp["discover"] += c.b_discover[it.type]
+            self.stats["discovered_by_type"][it.type] += 1
+            if it.discovered_by is not None:
+                self.stats["discovered_by_agent"][it.discovered_by] += 1
 
         # 5) coordination
         comp["coordination"] = self._coordination()
@@ -273,26 +513,96 @@ class SwarmSearchEnv(ParallelEnv):
         truncs = {a: truncated for a in agents_now}
         if terminated or truncated:
             for a in agents_now:
-                infos[a]["episode_stats"] = dict(self.stats)
+                infos[a]["episode_stats"] = copy.deepcopy(self.stats)
             self.agents = []
         return obs, rewards, terms, truncs, infos
 
+    # -------------------------------------------------------- step helpers
     def _can_pick(self, i):
         if self.carry[i] is not None:
             return False
         it = self.active.get(self.pos[i])
         if it is None:
             return False
-        return not (it["type"] == MAL and self.cfg.forbid_malicious_pickup)
+        if it.type == MAL and self.cfg.forbid_malicious_pickup:
+            return False
+        if self.cfg.claim_blocks_pickup and it.claimed_by not in (None, i):
+            return False
+        return True
 
     def _can_drop(self, i):
-        return self.carry[i] is not None and self.pos[i] == self.depot
+        return self.carry[i] is not None and self.pos[i] == self.checkpoint
+
+    def _do_pickup(self, i, it: Item) -> float:
+        c = self.cfg
+        self._clear_claim(it)
+        it.collected_by, it.pickup_t = i, self.t
+        self.stats["pickups"] += 1
+        self.stats["pickup_by_type"][it.type] += 1
+        pen = 0.0
+        if it.type == MAL:
+            self.stats["malicious_picked"] += 1
+            pen = -c.p_mal
+            if c.mal_on_pickup == "destroy":
+                it.status, it.end_t = Status.DISPOSED, self.t
+                self.stats["disposed"] += 1
+                self._release(i)  # fix: release agent's prior claim
+                return pen
+        self._release(i)
+        it.status = Status.CARRIED
+        self.carry[i] = it
+        return pen
+
+    def _select_served(self, idxs):
+        k = self.cfg.checkpoint_service_rate
+        if k is None or len(idxs) <= k:
+            return list(idxs)
+        mode = self.cfg.service_priority
+        if mode == "random":
+            order = self._order(idxs, "random")
+        elif mode == "index":
+            order = sorted(idxs)
+        else:
+            def key(i):
+                it = self.carry[i]
+                return (it.expiry - self.t if it.type == TEMP else float("inf"), i)
+            order = sorted(idxs, key=key)
+        return order[:k]
+
+    def _do_delivery(self, i) -> float:
+        it = self.carry[i]
+        assert it is not None and it.status == Status.CARRIED, "double delivery"
+        self.carry[i] = None
+        it.end_t = self.t
+        if it.type == MAL:
+            it.status = Status.DISPOSED
+            self.stats["disposed"] += 1
+            return 0.0
+        it.status = Status.DELIVERED
+        self.stats["deliveries"] += 1
+        self.stats["delivered_value"] += it.value
+        self.stats["delivered_by_type"][it.type] += 1
+        self.stats["delivery_log"].append({
+            "object_id": it.id, "type": it.type, "agent": i, "value": it.value,
+            "discovered_t": it.discovered_t, "pickup_t": it.pickup_t, "delivery_t": self.t,
+            "pickup_to_delivery": self.t - it.pickup_t,
+            "life_left": (it.expiry - self.t) if it.type == TEMP else None,
+        })
+        return it.value
+
+    def _expire(self, it: Item):
+        it.status, it.end_t = Status.EXPIRED, self.t
+        self.stats["expired_by_type"][it.type] += 1
+        if it.seen:
+            self.stats["expired_after_discovery"] += 1
 
     def _in_free(self, y, x):
         return 0 <= y < self.cfg.height and 0 <= x < self.cfg.width and not self.grid[y, x]
 
     def _move(self, acts):
         n = self.cfg.n_agents
+        stack = self.cfg.checkpoint_stacking
+        cp = self.checkpoint
         cur = list(self.pos)
         des = list(cur)
         col = [False] * n
@@ -303,7 +613,7 @@ class SwarmSearchEnv(ParallelEnv):
                 if self._in_free(ty, tx):
                     des[i] = (ty, tx)
                 else:
-                    col[i] = True  # bumped a wall
+                    col[i] = True
         changed = True
         while changed:
             changed = False
@@ -313,13 +623,16 @@ class SwarmSearchEnv(ParallelEnv):
                 for j in range(n):
                     if j == i:
                         continue
-                    same_target = des[j] == des[i]                       # includes a staying robot
+                    same_target = des[j] == des[i] and not (stack and des[i] == cp)
                     swap = des[i] == cur[j] and des[j] == cur[i]
                     if same_target or swap:
                         des[i] = cur[i]
                         col[i] = True
                         changed = True
                         break
+        for i in range(n):
+            if des[i] != cur[i]:
+                self.stats["distance"][i] += 1
         self.pos = des
         return int(sum(col))
 
@@ -328,7 +641,7 @@ class SwarmSearchEnv(ParallelEnv):
         pen = 0.0
         free_agents = [self.pos[i] for i in range(c.n_agents) if self.carry[i] is None]
         for p, it in self.active.items():
-            if not it["seen"] or it["type"] == MAL:
+            if not it.seen or it.type == MAL:
                 continue
             k = sum(1 for q in free_agents
                     if max(abs(q[0] - p[0]), abs(q[1] - p[1])) <= c.crowd_radius)
@@ -337,7 +650,7 @@ class SwarmSearchEnv(ParallelEnv):
         return pen
 
     def action_mask(self, agent):
-        i = self.possible_agents.index(agent)
+        i = self._idx[agent]
         m = np.zeros(N_ACTIONS, dtype=bool)
         y, x = self.pos[i]
         for a, (dy, dx) in MOVES.items():
@@ -347,15 +660,50 @@ class SwarmSearchEnv(ParallelEnv):
         m[DROP] = self._can_drop(i)
         return m
 
+    # --------------------------------------------------------- agent state
+    def _mode(self, i) -> Mode:
+        if self.carry[i] is not None:
+            return Mode.RETURN
+        if self.target[i] is not None:
+            return Mode.PURSUE
+        return Mode.EXPLORE
+
+    def agent_state(self, agent):
+        i = self._idx[agent]
+        y, x = self.pos[i]
+        carried, mode = self.carry[i], self._mode(i)
+        if mode == Mode.RETURN:
+            kind, tpos = "checkpoint", self.checkpoint
+        elif mode == Mode.PURSUE:
+            kind, tpos = "item", self.objects[self.target[i]].pos
+        else:
+            kind, tpos = None, None
+        return {
+            "position_xy": (x, y),
+            "carrying": carried is not None,
+            "carried_object_id": None if carried is None else carried.id,
+            "carried_object_type": None if carried is None else TYPE_NAMES[carried.type],
+            "target_kind": kind,
+            "target_object_id": self.target[i],
+            "target_xy": None if tpos is None else (tpos[1], tpos[0]),
+            "task_mode": mode.name,
+        }
+
+    def agent_states(self):
+        return {a: self.agent_state(a) for a in self.possible_agents}
+
+    # ------------------------------------------------------ observations
     def _remaining_frac(self, it):
-        return float(np.clip((it["expiry"] - self.t) / self._life_max, 0.0, 1.0))
+        return float(np.clip((it.expiry - self.t) / self._life_max, 0.0, 1.0))
 
     def _item_channels(self, seen_only):
+        """Item channels over the full map.  When *seen_only* is False the
+        ground-truth positions are returned (used for local windows)."""
         ch = np.zeros((3, self.cfg.height, self.cfg.width), dtype=np.float32)
         for (y, x), it in self.active.items():
-            if seen_only and not it["seen"]:
+            if seen_only and not it.seen:
                 continue
-            ch[it["type"], y, x] = self._remaining_frac(it) if it["type"] == TEMP else 1.0
+            ch[it.type, y, x] = self._remaining_frac(it) if it.type == TEMP else 1.0
         return ch
 
     def _agent_map(self):
@@ -364,101 +712,230 @@ class SwarmSearchEnv(ParallelEnv):
             m[y, x] = 1.0
         return m
 
+    def _belief_dist(self):
+        """Team-wide belief distance (shared mode)."""
+        if self.cfg.slack_uses_true_path:
+            return self.checkpoint_dist
+        return self._bfs(self.known & self.grid, self.checkpoint)
+
+    def _belief_dist_for(self, agent_known):
+        """Per-agent belief distance (private / window mode)."""
+        if self.cfg.slack_uses_true_path:
+            return self.checkpoint_dist
+        return self._bfs(agent_known & self.grid, self.checkpoint)
+
+    def _plen(self, bdist, p):
+        v = int(bdist[p])
+        return v if v >= 0 else self.cfg.height + self.cfg.width
+
+    def _effective_known(self, i):
+        """Return the known-cells map that agent *i* should see."""
+        c = self.cfg
+        if c.info_mode == "private":
+            return self._agent_known[i]
+        # window: only current sensing area
+        r = c.view_radius
+        y, x = self.pos[i]
+        k = np.zeros((c.height, c.width), dtype=bool)
+        k[max(0, y - r):y + r + 1, max(0, x - r):x + r + 1] = True
+        return k
+
+    def _visible_item_ids(self, i):
+        """Return the set of item IDs agent *i* should see in its team_map."""
+        c = self.cfg
+        if c.info_mode == "private":
+            return self._seen_by[i]
+        r = c.view_radius
+        y, x = self.pos[i]
+        return {it.id for p, it in self.active.items()
+                if max(abs(p[0] - y), abs(p[1] - x)) <= r}
+
     def _observations(self):
         c = self.cfg
         r, H, W = c.view_radius, c.height, c.width
         w = 2 * r + 1
+        mode = c.info_mode
 
-        items = self._item_channels(seen_only=False)
-        agents = self._agent_map()
-        depot = np.zeros((H, W), dtype=np.float32)
-        depot[self.depot] = 1.0
+        # full-world tensor for extracting local windows (always ground truth)
+        items_all = self._item_channels(seen_only=False)
+        agents_all = self._agent_map()
+        cp = np.zeros((H, W), dtype=np.float32)
+        cp[self.checkpoint] = 1.0
         world = np.concatenate([
-            self.grid[None].astype(np.float32), items, depot[None], agents[None]], axis=0)
+            self.grid[None].astype(np.float32), items_all, cp[None], agents_all[None]], axis=0)
         padded = np.pad(world, ((0, 0), (r, r), (r, r)))
-        padded[0, :r, :] = padded[0, -r:, :] = 1.0  
-        padded[0, :, :r] = padded[0, :, -r:] = 1.0
+        if r > 0:
+            padded[0, :r, :] = padded[0, -r:, :] = 1.0
+            padded[0, :, :r] = padded[0, :, -r:] = 1.0
 
-        titems = self._item_channels(seen_only=True)
-        team = np.concatenate([
-            self.known[None].astype(np.float32),
-            (self.known & self.grid)[None].astype(np.float32),
-            titems, agents[None]], axis=0)
+        # shared-mode: compute team map once
+        if mode == "shared":
+            titems_s = self._item_channels(seen_only=True)
+            claimed_s = np.zeros((H, W), dtype=np.float32)
+            for p, it in self.active.items():
+                if it.seen and it.status == Status.CLAIMED:
+                    claimed_s[p] = 1.0
+            team_s = np.concatenate([
+                self.known[None].astype(np.float32),
+                (self.known & self.grid)[None].astype(np.float32),
+                titems_s, agents_all[None], claimed_s[None]], axis=0)
+            kval_s = [it for it in self.active.values() if it.seen and it.type != MAL]
+            bdist_s = self._belief_dist()
 
-        known_val = [it for it in self.active.values() if it["seen"] and it["type"] != MAL]
         obs = {}
         for i, a in enumerate(self.possible_agents):
             y, x = self.pos[i]
             local = padded[:, y: y + w, x: x + w].copy()
-            local[5, r, r] = 0.0  # remove self from "other agents"
-            obs[a] = {"local": local, "team_map": team.copy(),
-                      "scalars": self._scalars(i, known_val)}
+            local[5, r, r] = 0.0  # remove self
+
+            if mode == "shared":
+                team = team_s.copy()
+                known_val = kval_s
+                bdist = bdist_s
+            else:
+                ak = self._effective_known(i)
+                vis = self._visible_item_ids(i)
+
+                titems_i = np.zeros((3, H, W), dtype=np.float32)
+                claimed_i = np.zeros((H, W), dtype=np.float32)
+                known_val = []
+                for p, it in self.active.items():
+                    if it.id not in vis:
+                        continue
+                    titems_i[it.type, p[0], p[1]] = (
+                        self._remaining_frac(it) if it.type == TEMP else 1.0)
+                    if it.status == Status.CLAIMED:
+                        claimed_i[p] = 1.0
+                    if it.type != MAL:
+                        known_val.append(it)
+
+                # agents channel: only those in the sensing window
+                agents_vis = np.zeros((H, W), dtype=np.float32)
+                for j, (jy, jx) in enumerate(self.pos):
+                    if max(abs(jy - y), abs(jx - x)) <= r:
+                        agents_vis[jy, jx] = 1.0
+
+                team = np.concatenate([
+                    ak[None].astype(np.float32),
+                    (ak & self.grid)[None].astype(np.float32),
+                    titems_i, agents_vis[None], claimed_i[None]], axis=0)
+                bdist = self._belief_dist_for(ak)
+
+            obs[a] = {"local": local, "team_map": team,
+                      "scalars": self._scalars(i, known_val, bdist)}
         return obs
 
-    def _slack(self, i, it):
-        d_item = abs(self.pos[i][0] - it["pos"][0]) + abs(self.pos[i][1] - it["pos"][1])
-        d_dep = self.depot_dist[it["pos"]]
-        return it["expiry"] - self.t - (d_item + d_dep + HANDLING_TIME)
+    def _slack(self, i, it, bdist):
+        d_item = abs(self.pos[i][0] - it.pos[0]) + abs(self.pos[i][1] - it.pos[1])
+        return it.expiry - self.t - (d_item + self._plen(bdist, it.pos) + HANDLING_TIME)
 
-    def _scalars(self, i, known_val):
+    def _scalars(self, i, known_val, bdist):
         c = self.cfg
         y, x = self.pos[i]
         carried = self.carry[i]
+        cy, cx = self.checkpoint
         s = np.zeros(N_SCALARS, dtype=np.float32)
         s[0], s[1] = y / c.height, x / c.width
         s[2] = float(carried is not None)
-        s[3] = self._remaining_frac(carried) if (carried and carried["type"] == TEMP) else 0.0
+        s[3] = self._remaining_frac(carried) if (carried and carried.type == TEMP) else 0.0
         s[4] = self.t / c.max_steps
         s[5] = min(self.stats["deliveries"] / (c.target_deliveries or 20), 1.0)
-        s[6], s[7] = (self.depot[0] - y) / c.height, (self.depot[1] - x) / c.width
+        s[6], s[7] = (cy - y) / c.height, (cx - x) / c.width
+        to_cp = self._plen(bdist, (y, x))
         slack = 1.0
         if carried is not None:
-            if carried["type"] == TEMP:
-                slack = (carried["expiry"] - self.t - self.depot_dist[y, x] - 1) / self._life_max
-        elif known_val:
-            near = min(known_val, key=lambda it: abs(it["pos"][0] - y) + abs(it["pos"][1] - x))
-            s[8] = (near["pos"][0] - y) / c.height
-            s[9] = (near["pos"][1] - x) / c.width
-            temps = [it for it in known_val if it["type"] == TEMP]
-            if temps:
-                slack = min(self._slack(i, it) for it in temps) / self._life_max
-        s[10] = float(np.clip(slack, -1.0, 1.0))
+            if carried.type == TEMP:
+                slack = (carried.expiry - self.t - to_cp - 1) / self._life_max
+        else:
+            cands = [it for it in known_val if it.claimed_by in (None, i)]
+            if cands:
+                near = min(cands, key=lambda it: abs(it.pos[0] - y) + abs(it.pos[1] - x))
+                s[8] = (near.pos[0] - y) / c.height
+                s[9] = (near.pos[1] - x) / c.width
+                temps = [it for it in cands if it.type == TEMP]
+                if temps:
+                    slack = min(self._slack(i, it, bdist) for it in temps) / self._life_max
+        s[10] = slack
         s[11] = min(len(known_val) / 10.0, 1.0)
-        return s
+        s[12] = float(carried is not None and carried.type == TEMP)
+        s[13] = float(carried is not None and carried.type == MAL)
+        if self.target[i] is not None:
+            tp = self.objects[self.target[i]].pos
+            s[14] = 1.0
+            s[15], s[16] = (tp[0] - y) / c.height, (tp[1] - x) / c.width
+        s[17 + int(self._mode(i))] = 1.0
+        s[20] = sum(it is not None for it in self.carry) / c.n_agents
+        s[21] = (self.t - carried.pickup_t) / self._life_max if carried is not None else 0.0
+        s[22] = to_cp / (c.height + c.width)
+        return np.clip(s, -1.0, 1.0)
 
     def _infos(self, comp):
         infos = {}
+        n_carry = sum(it is not None for it in self.carry)
         for a in self.agents:
             infos[a] = {
                 "action_mask": self.action_mask(a),
                 "reward_components": dict(comp),
                 "deliveries": self.stats["deliveries"],
+                "n_carrying": n_carry,
+                "agent_state": self.agent_state(a),
             }
         return infos
 
+    # -------------------------------------------------------- critic state
     def state(self):
-        """Full global state for a centralized critic (CTDE)."""
+        """Full global state for a centralized critic (CTDE).
+        Contains hidden information by design."""
         c = self.cfg
         items = self._item_channels(seen_only=False)
-        depot = np.zeros((c.height, c.width), dtype=np.float32)
-        depot[self.depot] = 1.0
+        cp = np.zeros((c.height, c.width), dtype=np.float32)
+        cp[self.checkpoint] = 1.0
         agent_feats = []
         for i in range(c.n_agents):
             y, x = self.pos[i]
             carried = self.carry[i]
-            agent_feats += [y / c.height, x / c.width, float(carried is not None)]
+            agent_feats += [y / c.height, x / c.width, float(carried is not None),
+                            self._remaining_frac(carried) if (carried and carried.type == TEMP) else 0.0]
         return np.concatenate([
-            self.grid.astype(np.float32).ravel(), depot.ravel(), items.ravel(),
+            self.grid.astype(np.float32).ravel(), cp.ravel(), items.ravel(),
             self.known.astype(np.float32).ravel(), self._agent_map().ravel(),
             np.array(agent_feats + [self.t / c.max_steps,
                                     min(self.stats["deliveries"] / (c.target_deliveries or 20), 1.0)],
                      dtype=np.float32)]).astype(np.float32)
 
-    def render(self, cell_px: int = 24):
+    # --------------------------------------------------------- invariants
+    def check_invariants(self):
+        """Raises AssertionError if object lifecycle / claim bookkeeping is broken."""
+        on_world = set()
+        for p, it in self.active.items():
+            assert it.status in (Status.AVAILABLE, Status.CLAIMED) and it.pos == p
+            assert (it.status == Status.CLAIMED) == (it.claimed_by is not None)
+            assert it.id not in on_world
+            on_world.add(it.id)
+        for i, it in enumerate(self.carry):
+            if it is not None:
+                assert it.status == Status.CARRIED and it.collected_by == i and it.claimed_by is None
+                assert it.id not in on_world, "object both on the ground and carried"
+                on_world.add(it.id)
+        live = (Status.AVAILABLE, Status.CLAIMED, Status.CARRIED)
+        for it in self.objects.values():
+            assert (it.id in on_world) == (it.status in live), f"object {it.id} {it.status.name} misplaced"
+        assert self.stats["deliveries"] == sum(it.status == Status.DELIVERED for it in self.objects.values())
+        assert len({d["object_id"] for d in self.stats["delivery_log"]}) == self.stats["deliveries"]
+        for i, t in enumerate(self.target):
+            if t is not None:
+                it = self.objects[t]
+                assert it.status == Status.CLAIMED and it.claimed_by == i and self.carry[i] is None
+        cells = [p for p in self.pos if not (self.cfg.checkpoint_stacking and p == self.checkpoint)]
+        assert len(cells) == len(set(cells)), "two agents share a non-checkpoint cell"
+        assert all(not self.grid[p] for p in self.pos), "agent inside an obstacle"
+
+    # ---------------------------------------------------------- rendering
+    def render(self, cell_px: int = 24, view: str = "both", agent=0):
         if self.render_mode == "ansi":
             return self._render_ansi()
         if self.render_mode == "rgb_array":
-            return self._render_rgb(cell_px)
+            return self.render_view(view, cell_px, agent)
         return None
 
     def _render_ansi(self):
@@ -466,21 +943,118 @@ class SwarmSearchEnv(ParallelEnv):
         rows = [["#" if self.grid[y, x] else "." for x in range(c.width)] for y in range(c.height)]
         sym = {PERSIST: "p", TEMP: "T", MAL: "m"}
         for (y, x), it in self.active.items():
-            rows[y][x] = sym[it["type"]]
-        rows[self.depot[0]][self.depot[1]] = "D"
+            rows[y][x] = sym[it.type]
+        rows[self.checkpoint[0]][self.checkpoint[1]] = "C"
         for i, (y, x) in enumerate(self.pos):
             rows[y][x] = str(i) if self.carry[i] is None else chr(ord("a") + i)
         return "\n".join("".join(r) for r in rows)
 
-    def _render_rgb(self, px):
+    @staticmethod
+    def _kron(base, px):
+        return (np.kron(base, np.ones((px, px, 1))) * 255).astype(np.uint8)
+
+    @staticmethod
+    def _paint(img, y, x, px, color, inset=0):
+        img[y * px + inset:(y + 1) * px - inset, x * px + inset:(x + 1) * px - inset] = \
+            (np.asarray(color) * 255).astype(np.uint8)
+
+    @staticmethod
+    def _frame(img, y0, x0, y1, x1, px, color, t=2):
+        col = (np.asarray(color) * 255).astype(np.uint8)
+        Y0, Y1, X0, X1 = y0 * px, (y1 + 1) * px, x0 * px, (x1 + 1) * px
+        img[Y0:Y0 + t, X0:X1] = col
+        img[Y1 - t:Y1, X0:X1] = col
+        img[Y0:Y1, X0:X0 + t] = col
+        img[Y0:Y1, X1 - t:X1] = col
+
+    @staticmethod
+    def _hcat(imgs, gap=10):
+        h = max(im.shape[0] for im in imgs)
+        out = []
+        for k, im in enumerate(imgs):
+            pad = np.full((h, im.shape[1], 3), 255, np.uint8)
+            pad[:im.shape[0]] = im
+            out.append(pad)
+            if k < len(imgs) - 1:
+                out.append(np.full((h, gap, 3), 255, np.uint8))
+        return np.concatenate(out, axis=1)
+
+    def render_view(self, view="both", px=24, agent=0, fog=True):
+        i = self._idx[agent] if isinstance(agent, str) else int(agent)
+        if view == "true":
+            return self._render_true(px, fog=fog)
+        obs = self._observations()[self.possible_agents[i]]
+        if view == "agent":
+            return self.render_observation(obs, px)
+        return self._hcat([self._render_true(px, fog=fog), self.render_observation(obs, px)])
+
+    def _render_true(self, px=24, fog=True):
         c = self.cfg
-        img = np.ones((c.height, c.width, 3), dtype=np.float32)
-        img[self.grid] = (0.25, 0.25, 0.28)
-        cols = {PERSIST: (0.95, 0.85, 0.2), TEMP: (1.0, 0.5, 0.0), MAL: (0.85, 0.1, 0.1)}
-        for (y, x), it in self.active.items():
-            img[y, x] = cols[it["type"]]
-        img[self.depot] = (0.1, 0.65, 0.3)
+        H, W, r = c.height, c.width, c.view_radius
+        if fog:
+            base = np.full((H, W, 3), _C_UNKNOWN, dtype=np.float32)
+            base[self.known & ~self.grid] = 1.0
+            base[self.known & self.grid] = _C_OBST
+            base[self.checkpoint] = _C_CP
+        else:
+            base = np.ones((H, W, 3), np.float32)
+            base[self.grid] = _C_OBST
+            base[self.checkpoint] = _C_CP
+        img = self._kron(base, px)
         for i, (y, x) in enumerate(self.pos):
-            img[y, x] = (0.0, 0.8, 0.9) if self.carry[i] is not None else (0.15, 0.3, 0.9)
-        img[~self.known] *= 0.45   # fog of war
-        return (np.kron(img, np.ones((px, px, 1))) * 255).astype(np.uint8)
+            self._frame(img, max(0, y - r), max(0, x - r), min(H - 1, y + r), min(W - 1, x + r),
+                        px, _AGENT_COLS[i % len(_AGENT_COLS)], 2)
+        for (y, x), it in self.active.items():
+            if not fog or it.seen:
+                self._paint(img, y, x, px, _ITEM_COL[it.type], 3)
+                if it.status == Status.CLAIMED:
+                    self._frame(img, y, x, y, x, px, _C_CLAIM, 1)
+        for i, (y, x) in enumerate(self.pos):
+            self._paint(img, y, x, px, _AGENT_COLS[i % len(_AGENT_COLS)], px // 6)
+            if self.carry[i] is not None:
+                self._paint(img, y, x, px, _ITEM_COL[self.carry[i].type], px // 3)
+        return img
+
+    def render_true_nofog(self, px=24):
+        """Ground-truth rendering with fog disabled (for debugging).
+        Does NOT mutate env state."""
+        return self._render_true(px, fog=False)
+
+    def _render_rgb(self, px=24, fog=True):
+        """Backward-compatibility alias."""
+        return self._render_true(px, fog=fog)
+
+    def render_observation(self, obs, px=24):
+        c = self.cfg
+        H, W, r = c.height, c.width, c.view_radius
+        team, local, sc = obs["team_map"], obs["local"], obs["scalars"]
+        ay, ax = int(round(float(sc[0]) * H)), int(round(float(sc[1]) * W))
+        cy, cx = ay + int(round(float(sc[6]) * H)), ax + int(round(float(sc[7]) * W))
+        base = np.empty((H, W, 3), np.float32)
+        base[:] = _C_UNKNOWN
+        base[team[0] > 0.5] = 1.0
+        base[team[1] > 0.5] = _C_OBST
+        base[cy, cx] = _C_CP
+        img = self._kron(base, px)
+        for typ in (PERSIST, TEMP, MAL):
+            for y, x in np.argwhere(team[2 + typ] > 0):
+                self._paint(img, y, x, px, _ITEM_COL[typ], 3)
+        for y, x in np.argwhere(team[6] > 0.5):
+            self._frame(img, y, x, y, x, px, _C_CLAIM, 1)
+        for y, x in np.argwhere(team[5] > 0.5):
+            self._paint(img, y, x, px, _C_AGENT_OTHER, px // 6)
+        self._paint(img, ay, ax, px, _C_SELF, px // 6)
+        self._frame(img, max(0, ay - r), max(0, ax - r), min(H - 1, ay + r), min(W - 1, ax + r), px, _C_SELF, 2)
+
+        w = 2 * r + 1
+        lp = np.ones((w, w, 3), np.float32)
+        lp[local[0] > 0.5] = _C_OBST
+        lp[local[4] > 0.5] = _C_CP
+        panel = self._kron(lp, px)
+        for typ in (PERSIST, TEMP, MAL):
+            for y, x in np.argwhere(local[1 + typ] > 0):
+                self._paint(panel, y, x, px, _ITEM_COL[typ], 3)
+        for y, x in np.argwhere(local[5] > 0.5):
+            self._paint(panel, y, x, px, _C_AGENT_OTHER, px // 6)
+        self._paint(panel, r, r, px, _C_SELF, px // 6)
+        return self._hcat([img, panel])
