@@ -77,7 +77,7 @@ def render_step_frame(env: SwarmSearchEnv, fog: bool, view: str = "true", agent:
             labels.append((x, y, str(i), "white"))
 
         # Temporary item countdown labels
-        vis_items = env._collective_window_items() if (fog and env.cfg.info_mode == "window") else None
+        vis_items = env._union_view() if (fog and env.cfg.info_mode == "window") else None
         for (y, x), it in env.active.items():
             is_vis = (not fog) or (it.id in vis_items if vis_items is not None else it.seen)
             if it.type == TEMP and is_vis:
