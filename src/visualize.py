@@ -2,14 +2,13 @@
 Visualise / simulate SwarmSearchEnv.
 
 Usage:
-  python visualize.py                         # live window, greedy baseline
-  python visualize.py --policy random         # random (masked) policy
-  python visualize.py --save episode.gif      # save animation (works headless)
+  python visualize.py                                   # live window, greedy baseline (shared)
+  python visualize.py --info-mode window                # live window, collective LOS mode
+  python visualize.py --info-mode window --view both    # side-by-side global + agent obs in window mode
+  python visualize.py --info-mode window --save win.gif # export GIF of window mode
+  python visualize.py --policy random                   # random (masked) policy
   python visualize.py --seed 5 --steps 200 --fps 8 --fog off
-  python visualize.py --view agent --agent 0  # inspect robot 0's observation view
-
-Later, plug in a trained policy by replacing `make_policy` (it must map
-obs dict -> {agent: action}).
+  python visualize.py --view agent --agent 0            # inspect robot 0's observation view
 """
 import argparse
 import sys
@@ -78,8 +77,10 @@ def render_step_frame(env: SwarmSearchEnv, fog: bool, view: str = "true", agent:
             labels.append((x, y, str(i), "white"))
 
         # Temporary item countdown labels
+        vis_items = env._collective_window_items() if (fog and env.cfg.info_mode == "window") else None
         for (y, x), it in env.active.items():
-            if it.type == TEMP and (not fog or it.seen):
+            is_vis = (not fog) or (it.id in vis_items if vis_items is not None else it.seen)
+            if it.type == TEMP and is_vis:
                 remaining = max(0, int(round(it.expiry - env.t)))
                 labels.append((x, y, str(remaining), "black"))
 
@@ -92,8 +93,8 @@ def render_step_frame(env: SwarmSearchEnv, fog: bool, view: str = "true", agent:
     mal_pick = s.get("malicious_picked", 0)
     ret = s.get("ep_return", 0.0)
 
-    title = (f"t={env.t} | Deliv: P={p_del} T={t_del} M={m_del} (tot {s['deliveries']}) | "
-             f"Exp T={exp_t} | Mal Picked={mal_pick} | Return={ret:.1f}")
+    title = (f"[{env.cfg.info_mode}] t={env.t} | Deliv: P={p_del} T={t_del} M={m_del} "
+             f"(tot {s['deliveries']}) | Exp T={exp_t} | Mal={mal_pick} | Ret={ret:.1f}")
     return img, labels, title
 
 
@@ -231,6 +232,8 @@ def main():
     p = argparse.ArgumentParser(description="Visualize / simulate SwarmSearchEnv.")
     p.add_argument("--policy", choices=["greedy", "random"], default="greedy",
                    help="Policy to evaluate ('greedy' or 'random')")
+    p.add_argument("--info-mode", choices=["shared", "private", "window"], default="shared",
+                   help="Information sharing mode ('shared', 'private', or 'window')")
     p.add_argument("--seed", type=int, default=0,
                    help="Random seed for environment and policy")
     p.add_argument("--steps", type=int, default=300,
@@ -255,7 +258,10 @@ def main():
     if args.seed < 0:
         p.error("--seed must be a non-negative integer.")
 
-    env = SwarmSearchEnv(EnvConfig(max_steps=args.steps), render_mode="rgb_array")
+    env = SwarmSearchEnv(
+        EnvConfig(max_steps=args.steps, info_mode=args.info_mode),
+        render_mode="rgb_array"
+    )
 
     # Validate agent selection against configured number of agents
     if args.agent < 0 or args.agent >= env.cfg.n_agents:
