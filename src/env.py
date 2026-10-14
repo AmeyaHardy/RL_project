@@ -282,6 +282,7 @@ class SwarmSearchEnv(ParallelEnv):
             "temp_spawned": 0, "persist_spawned": 0, "mal_spawned": 0,
             "collisions": 0,
             "discovered_by_type": [0, 0, 0], "discovered_by_agent": [0] * n,
+            "personal_discovered_by_agent": [0] * n,
             "pickup_conflicts": 0, "service_denied": 0,
             "claim_conflicts": 0, "invalid_targets": 0,
             "delivery_log": [],
@@ -313,7 +314,7 @@ class SwarmSearchEnv(ParallelEnv):
             self._spawn_item(TEMP)
 
         # initial visibility
-        _, init_items = self._update_visibility()
+        _, init_items = self._update_visibility(count_personal=c.count_initial_discovery)
         if c.count_initial_discovery:
             for it in init_items:
                 self.stats["discovered_by_type"][it.type] += 1
@@ -323,7 +324,7 @@ class SwarmSearchEnv(ParallelEnv):
         return self._observations(), self._infos({})
 
     # ----------------------------------------------------------- visibility
-    def _update_visibility(self):
+    def _update_visibility(self, count_personal: bool = True):
         """Reveal the Chebyshev window around every robot.
         Updates both the team-wide ``self.known`` and per-agent
         ``self._agent_known`` / ``self._seen_by`` maps.
@@ -340,7 +341,10 @@ class SwarmSearchEnv(ParallelEnv):
         for i, (y, x) in enumerate(self.pos):
             for p, it in self.active.items():
                 if max(abs(p[0] - y), abs(p[1] - x)) <= r:
-                    self._seen_by[i].add(it.id)
+                    if it.id not in self._seen_by[i]:
+                        self._seen_by[i].add(it.id)
+                        if count_personal:
+                            self.stats["personal_discovered_by_agent"][i] += 1
                     if not it.seen:
                         it.seen, it.discovered_by, it.discovered_t = True, i, self.t
                         new_items.append(it)
@@ -488,7 +492,7 @@ class SwarmSearchEnv(ParallelEnv):
                     self.stats["mal_spawned"] += 1
 
         # 4) discovery
-        new_frac, new_items = self._update_visibility()
+        new_frac, new_items = self._update_visibility(count_personal=True)
         comp["map"] = c.alpha_map * new_frac
         for it in new_items:
             comp["discover"] += c.b_discover[it.type]
@@ -546,7 +550,7 @@ class SwarmSearchEnv(ParallelEnv):
             if c.mal_on_pickup == "destroy":
                 it.status, it.end_t = Status.DISPOSED, self.t
                 self.stats["disposed"] += 1
-                self._release(i)  # fix: release agent's prior claim
+                self._release(i)  # release agent's prior claim
                 return pen
         self._release(i)
         it.status = Status.CARRIED
@@ -697,7 +701,7 @@ class SwarmSearchEnv(ParallelEnv):
         return float(np.clip((it.expiry - self.t) / self._life_max, 0.0, 1.0))
 
     def _item_channels(self, seen_only):
-        """Item channels over the full map.  When *seen_only* is False the
+        """Item channels over the full map. When *seen_only* is False the
         ground-truth positions are returned (used for local windows)."""
         ch = np.zeros((3, self.cfg.height, self.cfg.width), dtype=np.float32)
         for (y, x), it in self.active.items():
@@ -719,7 +723,7 @@ class SwarmSearchEnv(ParallelEnv):
         return self._bfs(self.known & self.grid, self.checkpoint)
 
     def _belief_dist_for(self, agent_known):
-        """Per-agent belief distance (private / window mode)."""
+        """Belief distance under a given known-cells mask (private / window mode)."""
         if self.cfg.slack_uses_true_path:
             return self.checkpoint_dist
         return self._bfs(agent_known & self.grid, self.checkpoint)
@@ -728,27 +732,44 @@ class SwarmSearchEnv(ParallelEnv):
         v = int(bdist[p])
         return v if v >= 0 else self.cfg.height + self.cfg.width
 
+    def _collective_window_known(self) -> np.ndarray:
+        """Union of all agents' current sensing windows at timestep t (window mode)."""
+        c = self.cfg
+        r = c.view_radius
+        k = np.zeros((c.height, c.width), dtype=bool)
+        for y, x in self.pos:
+            k[max(0, y - r):y + r + 1, max(0, x - r):x + r + 1] = True
+        return k
+
+    def _collective_window_items(self) -> set:
+        """Set of active item IDs currently inside ANY agent's sensing window (window mode)."""
+        c = self.cfg
+        r = c.view_radius
+        vis = set()
+        for p, it in self.active.items():
+            for y, x in self.pos:
+                if max(abs(p[0] - y), abs(p[1] - x)) <= r:
+                    vis.add(it.id)
+                    break
+        return vis
+
     def _effective_known(self, i):
         """Return the known-cells map that agent *i* should see."""
         c = self.cfg
         if c.info_mode == "private":
             return self._agent_known[i]
-        # window: only current sensing area
-        r = c.view_radius
-        y, x = self.pos[i]
-        k = np.zeros((c.height, c.width), dtype=bool)
-        k[max(0, y - r):y + r + 1, max(0, x - r):x + r + 1] = True
-        return k
+        if c.info_mode == "window":
+            return self._collective_window_known()
+        return self.known
 
     def _visible_item_ids(self, i):
         """Return the set of item IDs agent *i* should see in its team_map."""
         c = self.cfg
         if c.info_mode == "private":
             return self._seen_by[i]
-        r = c.view_radius
-        y, x = self.pos[i]
-        return {it.id for p, it in self.active.items()
-                if max(abs(p[0] - y), abs(p[1] - x)) <= r}
+        if c.info_mode == "window":
+            return self._collective_window_items()
+        return {it.id for it in self.active.values() if it.seen}
 
     def _observations(self):
         c = self.cfg
@@ -768,7 +789,7 @@ class SwarmSearchEnv(ParallelEnv):
             padded[0, :r, :] = padded[0, -r:, :] = 1.0
             padded[0, :, :r] = padded[0, :, -r:] = 1.0
 
-        # shared-mode: compute team map once
+        # shared-mode: compute persistent team map once
         if mode == "shared":
             titems_s = self._item_channels(seen_only=True)
             claimed_s = np.zeros((H, W), dtype=np.float32)
@@ -781,6 +802,27 @@ class SwarmSearchEnv(ParallelEnv):
                 titems_s, agents_all[None], claimed_s[None]], axis=0)
             kval_s = [it for it in self.active.values() if it.seen and it.type != MAL]
             bdist_s = self._belief_dist()
+        elif mode == "window":
+            # window-mode: collective instantaneous line-of-sight across all agents
+            wk = self._collective_window_known()
+            wvis = self._collective_window_items()
+            titems_w = np.zeros((3, H, W), dtype=np.float32)
+            claimed_w = np.zeros((H, W), dtype=np.float32)
+            kval_w = []
+            for p, it in self.active.items():
+                if it.id not in wvis:
+                    continue
+                titems_w[it.type, p[0], p[1]] = (
+                    self._remaining_frac(it) if it.type == TEMP else 1.0)
+                if it.status == Status.CLAIMED:
+                    claimed_w[p] = 1.0
+                if it.type != MAL:
+                    kval_w.append(it)
+            team_w = np.concatenate([
+                wk[None].astype(np.float32),
+                (wk & self.grid)[None].astype(np.float32),
+                titems_w, agents_all[None], claimed_w[None]], axis=0)
+            bdist_w = self._belief_dist_for(wk)
 
         obs = {}
         for i, a in enumerate(self.possible_agents):
@@ -792,9 +834,14 @@ class SwarmSearchEnv(ParallelEnv):
                 team = team_s.copy()
                 known_val = kval_s
                 bdist = bdist_s
+            elif mode == "window":
+                team = team_w.copy()
+                known_val = kval_w
+                bdist = bdist_w
             else:
-                ak = self._effective_known(i)
-                vis = self._visible_item_ids(i)
+                # private mode: persistent individual memory, no communication
+                ak = self._agent_known[i]
+                vis = self._seen_by[i]
 
                 titems_i = np.zeros((3, H, W), dtype=np.float32)
                 claimed_i = np.zeros((H, W), dtype=np.float32)
@@ -809,7 +856,7 @@ class SwarmSearchEnv(ParallelEnv):
                     if it.type != MAL:
                         known_val.append(it)
 
-                # agents channel: only those in the sensing window
+                # agents channel in private mode: only those in own sensing window
                 agents_vis = np.zeros((H, W), dtype=np.float32)
                 for j, (jy, jx) in enumerate(self.pos):
                     if max(abs(jy - y), abs(jx - x)) <= r:
@@ -938,6 +985,10 @@ class SwarmSearchEnv(ParallelEnv):
             return self.render_view(view, cell_px, agent)
         return None
 
+    def close(self):
+        """Clean up environment resources (PettingZoo API)."""
+        pass
+
     def _render_ansi(self):
         c = self.cfg
         rows = [["#" if self.grid[y, x] else "." for x in range(c.width)] for y in range(c.height)]
@@ -992,9 +1043,10 @@ class SwarmSearchEnv(ParallelEnv):
         c = self.cfg
         H, W, r = c.height, c.width, c.view_radius
         if fog:
+            vis_mask = self._collective_window_known() if c.info_mode == "window" else self.known
             base = np.full((H, W, 3), _C_UNKNOWN, dtype=np.float32)
-            base[self.known & ~self.grid] = 1.0
-            base[self.known & self.grid] = _C_OBST
+            base[vis_mask & ~self.grid] = 1.0
+            base[vis_mask & self.grid] = _C_OBST
             base[self.checkpoint] = _C_CP
         else:
             base = np.ones((H, W, 3), np.float32)
@@ -1004,8 +1056,10 @@ class SwarmSearchEnv(ParallelEnv):
         for i, (y, x) in enumerate(self.pos):
             self._frame(img, max(0, y - r), max(0, x - r), min(H - 1, y + r), min(W - 1, x + r),
                         px, _AGENT_COLS[i % len(_AGENT_COLS)], 2)
+        vis_items = self._collective_window_items() if (fog and c.info_mode == "window") else None
         for (y, x), it in self.active.items():
-            if not fog or it.seen:
+            is_vis = (not fog) or (it.id in vis_items if vis_items is not None else it.seen)
+            if is_vis:
                 self._paint(img, y, x, px, _ITEM_COL[it.type], 3)
                 if it.status == Status.CLAIMED:
                     self._frame(img, y, x, y, x, px, _C_CLAIM, 1)

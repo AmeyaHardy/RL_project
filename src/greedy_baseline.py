@@ -118,9 +118,9 @@ class GreedyPolicy:
     Features:
     - Zero hidden-state leakage: action mask and path planning use only observed maps.
     - Respects claim_blocks_pickup and claimed-items channel (channel 6) conservatively.
-    - Separate visited-frontier tracking per agent in private/window modes, shared in shared mode.
+    - Separate visited-frontier tracking per agent in private mode, shared in shared/window modes.
     - Frontiers marked visited only upon arrival or when no longer a frontier.
-    - Strict deadline feasibility: temporary items require a known, reachable route to depot (no Manhattan fallback).
+    - Strict deadline feasibility: temporary items require a reachable route to depot (no Manhattan fallback).
     - Seeded, lazy stochastic choices for tie-breaking and wiggling.
     - Clean reset clearing all per-episode tracking state.
     """
@@ -132,8 +132,8 @@ class GreedyPolicy:
         self.rng = np.random.default_rng(seed)
         self.targets: Dict[str, Tuple[int, int]] = {}
         self.target_type: Dict[str, str] = {}
-        self.visited_frontiers: Set[Tuple[int, int]] = set()  # shared mode
-        self.agent_visited_frontiers: Dict[str, Set[Tuple[int, int]]] = {}  # private/window modes
+        self.visited_frontiers: Set[Tuple[int, int]] = set()  # shared / window modes
+        self.agent_visited_frontiers: Dict[str, Set[Tuple[int, int]]] = {}  # private mode
 
     def reset(self):
         """Reset all episode-specific coordination and exploration state."""
@@ -164,7 +164,9 @@ class GreedyPolicy:
     def act(self, obs: dict) -> Dict[str, int]:
         cfg = self.cfg
         H, W = cfg.height, cfg.width
-        shared = (cfg.info_mode == "shared")
+        # Both 'shared' and 'window' communicate live observations across the team
+        shared = cfg.info_mode in ("shared", "window")
+        window_mode = (cfg.info_mode == "window")
         actions: Dict[str, int] = {}
 
         for a, o in obs.items():
@@ -185,7 +187,7 @@ class GreedyPolicy:
             carrying = bool(sc[2] > 0.5)
             mask = observation_action_mask(o, cfg)
 
-            # Visited frontiers set: shared for shared mode, per-agent for private/window modes
+            # Visited frontiers set: shared for shared/window modes, per-agent for private mode
             if shared:
                 visited = self.visited_frontiers
             else:
@@ -201,7 +203,7 @@ class GreedyPolicy:
                     self.targets.pop(a, None)
                     self.target_type.pop(a, None)
 
-            # Avoid teammate claims in shared mode
+            # Avoid teammate claims when communicating (shared or window mode)
             teammate_claims = {tgt for ag, tgt in self.targets.items() if ag != a} if shared else set()
 
             # Observable valuable items: persistent (ch 2) and temporary (ch 3)
@@ -222,10 +224,17 @@ class GreedyPolicy:
                 if (qy, qx) != pos and (qy, qx) != depot:
                     plan_free[qy, qx] = False
 
-            # Distance from current position
+            # Distance from current position through known free space
             dist, first = bfs(plan_free, pos)
-            # Distance to depot through known free cells
-            dep_dist, _ = bfs(free, depot)
+
+            # Distance to depot: in memoryless window mode, cells outside current collective
+            # line-of-sight are unknown, so route through non-obstacle cells ~(known & kobs)
+            # while still blocking known obstacles.
+            if window_mode:
+                opt_free = ~(known & kobs)
+                dep_dist, _ = bfs(opt_free, depot)
+            else:
+                dep_dist, _ = bfs(free, depot)
 
             # CASE 1: Carrying an item -> return to depot
             if carrying:
@@ -235,6 +244,18 @@ class GreedyPolicy:
                     actions[a] = DROP
                 elif depot in first:
                     actions[a] = first[depot]
+                elif window_mode:
+                    # In memoryless window mode, navigate around currently visible obstacles toward depot
+                    opt_plan = ~(known & kobs)
+                    for q in np.argwhere(team[5] > 0.5):
+                        qy, qx = int(q[0]), int(q[1])
+                        if (qy, qx) != pos and (qy, qx) != depot:
+                            opt_plan[qy, qx] = False
+                    _, opt_first = bfs(opt_plan, pos)
+                    if depot in opt_first and mask[opt_first[depot]]:
+                        actions[a] = opt_first[depot]
+                    else:
+                        actions[a] = self._toward(mask, depot[0] - pos[0], depot[1] - pos[1])
                 elif free[depot]:
                     actions[a] = STAY
                 else:
