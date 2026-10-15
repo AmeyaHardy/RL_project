@@ -134,6 +134,7 @@ class SwarmSearchEnv(ParallelEnv):
         self.possible_agents = [f"robot_{i}" for i in range(self.cfg.n_agents)]
         self._idx = {a: i for i, a in enumerate(self.possible_agents)}
         self.agents = []
+        self._bd_cache = {}
         self.rng = np.random.default_rng()
         self._life_max = float(self.cfg.temp_life_range[1])
 
@@ -175,6 +176,8 @@ class SwarmSearchEnv(ParallelEnv):
         """Compute 2D shortest-path distance array from start."""
         H, W = grid.shape
         dist = -np.ones((H, W), dtype=np.int32)
+        if not (0 <= start[0] < H and 0 <= start[1] < W) or grid[start]:
+            return dist
         dist[start] = 0
         q = deque([start])
         while q:
@@ -264,6 +267,7 @@ class SwarmSearchEnv(ParallelEnv):
         if seed is not None:
             self.rng = np.random.default_rng(seed)
         self.agents = list(self.possible_agents)
+        self._bd_cache = {}
         self._generate_map()
         self.t = 0
         self._next_id = 0
@@ -734,13 +738,22 @@ class SwarmSearchEnv(ParallelEnv):
         """Compute team belief distance matrix to checkpoint."""
         if self.cfg.slack_uses_true_path:
             return self.checkpoint_dist
-        return self._bfs(self.known & self.grid, self.checkpoint)
+        return self._belief_dist_for(self.known)
 
-    def _belief_dist_for(self, agent_known):
-        """Compute belief distance matrix to checkpoint using specified known grid."""
-        if self.cfg.slack_uses_true_path:
+    def _belief_dist_for(self, agent_known, start=None):
+        """Compute belief distance matrix from start (default checkpoint) using memoised BFS."""
+        if start is None and self.cfg.slack_uses_true_path:
             return self.checkpoint_dist
-        return self._bfs(agent_known & self.grid, self.checkpoint)
+        target = self.checkpoint if start is None else start
+        known_grid = agent_known & self.grid
+        key = (known_grid.tobytes(), target)
+        hit = self._bd_cache.get(key)
+        if hit is None:
+            if len(self._bd_cache) >= 512:
+                self._bd_cache.clear()
+            hit = self._bfs(known_grid, target)
+            self._bd_cache[key] = hit
+        return hit
 
     def _plen(self, bdist, p):
         """Return distance to checkpoint or grid dimension upper bound."""
@@ -812,6 +825,7 @@ class SwarmSearchEnv(ParallelEnv):
                 team = team_s.copy()
                 known_val = kval_s
                 bdist = bdist_s
+                adist = self._belief_dist_for(kn, start=(y, x))
             else:
                 ak = self._effective_known(i)
                 vis = self._visible_item_ids(i)
@@ -838,17 +852,21 @@ class SwarmSearchEnv(ParallelEnv):
                     titems_i, agents_vis[None], claimed_i[None]
                 ], axis=0)
                 bdist = self._belief_dist_for(ak)
+                adist = self._belief_dist_for(ak, start=(y, x))
 
-            obs[a] = {"local": local, "team_map": team, "scalars": self._scalars(i, known_val, bdist)}
+            obs[a] = {"local": local, "team_map": team, "scalars": self._scalars(i, known_val, bdist, adist)}
         return obs
 
-    def _slack(self, i, it, bdist):
-        """Compute deadline slack for temporary item pickup and delivery."""
-        d_item = abs(self.pos[i][0] - it.pos[0]) + abs(self.pos[i][1] - it.pos[1])
+    def _slack(self, i, it, bdist, adist=None):
+        """Compute geodesic deadline slack for temporary item pickup and delivery."""
+        if adist is not None and adist[it.pos] >= 0:
+            d_item = int(adist[it.pos])
+        else:
+            d_item = abs(self.pos[i][0] - it.pos[0]) + abs(self.pos[i][1] - it.pos[1])
         return it.expiry - self.t - (d_item + self._plen(bdist, it.pos) + HANDLING_TIME)
 
-    def _scalars(self, i, known_val, bdist):
-        """Construct scalar observation vector for agent i."""
+    def _scalars(self, i, known_val, bdist, adist=None):
+        """Construct scalar observation vector for agent i using geodesic distances."""
         c = self.cfg
         y, x = self.pos[i]
         carried = self.carry[i]
@@ -862,18 +880,32 @@ class SwarmSearchEnv(ParallelEnv):
         s[6], s[7] = (cy - y) / c.height, (cx - x) / c.width
         to_cp = self._plen(bdist, (y, x))
         slack = 1.0
+
+        def item_dist(it):
+            if adist is not None and adist[it.pos] >= 0:
+                return int(adist[it.pos])
+            return abs(it.pos[0] - y) + abs(it.pos[1] - x)
+
         if carried is not None:
             if carried.type == TEMP:
                 slack = (carried.expiry - self.t - to_cp - 1) / self._life_max
         else:
             cands = [it for it in known_val if it.claimed_by in (None, i)]
             if cands:
-                near = min(cands, key=lambda it: abs(it.pos[0] - y) + abs(it.pos[1] - x))
-                s[8] = (near.pos[0] - y) / c.height
-                s[9] = (near.pos[1] - x) / c.width
+                feasible = [
+                    it for it in cands
+                    if it.type != TEMP or self._slack(i, it, bdist, adist) >= 0
+                ]
+                pool = feasible if feasible else cands
+                best_it = max(
+                    pool,
+                    key=lambda it: (c.v_high if it.type == TEMP else c.v_low) / (item_dist(it) + 0.3 * self._plen(bdist, it.pos) + 1.5)
+                )
+                s[8] = (best_it.pos[0] - y) / c.height
+                s[9] = (best_it.pos[1] - x) / c.width
                 temps = [it for it in cands if it.type == TEMP]
                 if temps:
-                    slack = min(self._slack(i, it, bdist) for it in temps) / self._life_max
+                    slack = max(self._slack(i, it, bdist, adist) for it in temps) / self._life_max
         s[10] = slack
         s[11] = min(len(known_val) / 10.0, 1.0)
         s[12] = float(carried is not None and carried.type == TEMP)
