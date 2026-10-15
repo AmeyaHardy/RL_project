@@ -1,15 +1,5 @@
-"""
-Visualise / simulate SwarmSearchEnv.
+from __future__ import annotations
 
-Usage:
-  python visualize.py                                   # live window, greedy baseline (shared)
-  python visualize.py --info-mode window                # live window, collective LOS mode
-  python visualize.py --info-mode window --view both    # side-by-side global + agent obs in window mode
-  python visualize.py --info-mode window --save win.gif # export GIF of window mode
-  python visualize.py --policy random                   # random (masked) policy
-  python visualize.py --seed 5 --steps 200 --fps 8 --fog off
-  python visualize.py --view agent --agent 0            # inspect robot 0's observation view
-"""
 import argparse
 import sys
 
@@ -28,15 +18,11 @@ try:
 except ImportError:
     from baseline_greedy import GreedyPolicy, observation_action_mask
 
-PX = 24  # pixels per cell in the rendered frame
+PX = 24
 
 
 def make_policy(name: str, env: SwarmSearchEnv, seed: int = 0):
-    """Factory for policies.
-
-    A policy is a callable: obs_dict -> {agent_id: action_int}.
-    Uses observation-derived action masks to prevent hidden-state leakage.
-    """
+    """Create policy action function for greedy or random control."""
     if name == "greedy":
         return GreedyPolicy(env, seed=seed).act
     if name == "random":
@@ -56,7 +42,7 @@ def make_policy(name: str, env: SwarmSearchEnv, seed: int = 0):
 
 
 def render_step_frame(env: SwarmSearchEnv, fog: bool, view: str = "true", agent: int = 0, px: int = PX):
-    """Render image, text labels, and episode stats title without leaking info."""
+    """Render frame image, labels, and title statistics without leaking hidden state."""
     if view == "agent":
         agent_key = env.possible_agents[agent % len(env.possible_agents)]
         obs = env._observations()[agent_key]
@@ -65,26 +51,19 @@ def render_step_frame(env: SwarmSearchEnv, fog: bool, view: str = "true", agent:
     elif view == "both":
         img = env.render_view(view="both", px=px, agent=agent, fog=fog)
         labels = []
-    else:  # view == "true"
-        if fog:
-            img = env.render_view(view="true", px=px, fog=True)
-        else:
-            img = env.render_true_nofog(px=px)
-
+    else:
+        img = env.render_view(view="true", px=px, fog=True) if fog else env.render_true_nofog(px=px)
         labels = []
-        # Agent index labels
         for i, (y, x) in enumerate(env.pos):
             labels.append((x, y, str(i), "white"))
 
-        # Temporary item countdown labels
-        vis_items = env._union_view() if (fog and env.cfg.info_mode == "window") else None
+        win_mask = env._union_view() if (fog and env.cfg.info_mode == "window") else None
         for (y, x), it in env.active.items():
-            is_vis = (not fog) or (it.id in vis_items if vis_items is not None else it.seen)
+            is_vis = (not fog) or (bool(win_mask[y, x]) if win_mask is not None else it.seen)
             if it.type == TEMP and is_vis:
                 remaining = max(0, int(round(it.expiry - env.t)))
                 labels.append((x, y, str(remaining), "black"))
 
-    # Episode statistics
     s = env.stats
     p_del = s["delivered_by_type"][PERSIST]
     t_del = s["delivered_by_type"][TEMP]
@@ -99,7 +78,7 @@ def render_step_frame(env: SwarmSearchEnv, fog: bool, view: str = "true", agent:
 
 
 def setup_figure(img_shape, px: int = PX):
-    """Set up matplotlib figure, axes, and legend."""
+    """Set up Matplotlib figure, axes, and color legend."""
     import matplotlib.pyplot as plt
     from matplotlib.patches import Patch
 
@@ -121,7 +100,7 @@ def setup_figure(img_shape, px: int = PX):
 
 
 def update_ax(ax, im, texts, img, labels, title, px: int = PX):
-    """Update imshow and text labels in ax."""
+    """Update imshow canvas and text annotations."""
     im.set_data(img)
     for t in texts:
         t.remove()
@@ -135,7 +114,7 @@ def update_ax(ax, im, texts, img, labels, title, px: int = PX):
 
 def stream_to_gif(env: SwarmSearchEnv, policy, seed: int, steps: int, fog: bool,
                   fps: int, save_path: str, view: str = "true", agent: int = 0, px: int = PX):
-    """Memory-efficient streaming GIF writer. Grabs frames directly without storing all in RAM."""
+    """Stream environment simulation frames directly to GIF file."""
     import matplotlib.pyplot as plt
     from matplotlib import animation
 
@@ -185,7 +164,7 @@ def stream_to_gif(env: SwarmSearchEnv, policy, seed: int, steps: int, fog: bool,
 
 def live_animation(env: SwarmSearchEnv, policy, seed: int, steps: int, fog: bool,
                    fps: int, view: str = "true", agent: int = 0, px: int = PX):
-    """Interactive live Matplotlib animation."""
+    """Execute live interactive Matplotlib animation of episode."""
     import matplotlib.pyplot as plt
     from matplotlib import animation
 
@@ -229,28 +208,22 @@ def live_animation(env: SwarmSearchEnv, policy, seed: int, steps: int, fog: bool
 
 
 def main():
+    """Parse command-line arguments and run episode visualization."""
     p = argparse.ArgumentParser(description="Visualize / simulate SwarmSearchEnv.")
     p.add_argument("--policy", choices=["greedy", "random"], default="greedy",
                    help="Policy to evaluate ('greedy' or 'random')")
     p.add_argument("--info-mode", choices=["shared", "private", "window"], default="shared",
                    help="Information sharing mode ('shared', 'private', or 'window')")
-    p.add_argument("--seed", type=int, default=0,
-                   help="Random seed for environment and policy")
-    p.add_argument("--steps", type=int, default=300,
-                   help="Maximum episode steps")
-    p.add_argument("--fps", type=int, default=10,
-                   help="Animation frames per second")
-    p.add_argument("--fog", choices=["on", "off"], default="on",
-                   help="Enable or disable fog of war in visualization")
+    p.add_argument("--seed", type=int, default=0, help="Random seed for environment and policy")
+    p.add_argument("--steps", type=int, default=300, help="Maximum episode steps")
+    p.add_argument("--fps", type=int, default=10, help="Animation frames per second")
+    p.add_argument("--fog", choices=["on", "off"], default="on", help="Enable or disable fog of war in visualization")
     p.add_argument("--view", choices=["true", "agent", "both"], default="true",
                    help="View mode: 'true' (global), 'agent' (single agent obs), 'both'")
-    p.add_argument("--agent", type=int, default=0,
-                   help="Agent index for 'agent' or 'both' view mode")
-    p.add_argument("--save", type=str, default=None,
-                   help="Filepath to export GIF (e.g. episode.gif)")
+    p.add_argument("--agent", type=int, default=0, help="Agent index for 'agent' or 'both' view mode")
+    p.add_argument("--save", type=str, default=None, help="Filepath to export GIF (e.g. episode.gif)")
     args = p.parse_args()
 
-    # Validation
     if args.fps <= 0:
         p.error("--fps must be a positive integer.")
     if args.steps <= 0:
@@ -263,7 +236,6 @@ def main():
         render_mode="rgb_array"
     )
 
-    # Validate agent selection against configured number of agents
     if args.agent < 0 or args.agent >= env.cfg.n_agents:
         p.error(f"--agent must be between 0 and {env.cfg.n_agents - 1}.")
 

@@ -57,7 +57,6 @@ class Item:
 
 @dataclass
 class EnvConfig:
-    # world
     height: int = 20
     width: int = 20
     n_agents: int = 4
@@ -65,20 +64,16 @@ class EnvConfig:
     min_free_frac: float = 0.55
     view_radius: int = 3
     start_radius: int = 4
-    # checkpoint
     checkpoint_xy: Optional[tuple] = None
     checkpoint_stacking: bool = True
     checkpoint_service_rate: Optional[int] = None
     service_priority: str = "urgency"
-    # items — initial counts
     n_persistent: int = 10
     n_malicious: int = 3
     n_temp_initial: int = 0
-    # items — dynamic spawning (per-step probability, 0 disables)
     temp_spawn_prob: float = 0.04
     persist_spawn_prob: float = 0.0
     mal_spawn_prob: float = 0.0
-    # items — caps & behaviour
     temp_life_range: tuple = (40, 80)
     max_temp_active: int = 5
     max_persist_active: int = 30
@@ -86,20 +81,12 @@ class EnvConfig:
     forbid_malicious_pickup: bool = False
     mal_on_pickup: str = "destroy"
     temp_expires_while_carried: bool = True
-    # coordination rules
     tiebreak: str = "index"
     claim_blocks_pickup: bool = False
     slack_uses_true_path: bool = False
-    # information sharing
-    # "shared" : team map accumulates every robot's discoveries forever (persistent, global)
-    # "private": each robot's map accumulates only what ITS OWN window has seen
-    # "window" : current-view sharing. team_map = union of ALL robots' CURRENT windows;
-    #            nothing is stored, so cells/items vanish as soon as no robot is looking at them
-    info_mode: str = "shared"  # "shared" | "private" | "window"
-    # episode
+    info_mode: str = "shared"
     max_steps: int = 300
     target_deliveries: Optional[int] = None
-    # rewards
     v_low: float = 1.0
     v_high: float = 5.0
     p_mal: float = 2.0
@@ -110,10 +97,10 @@ class EnvConfig:
     b_discover: tuple = (0.05, 0.20, 0.0)
     coord_penalty: float = 0.1
     crowd_radius: int = 2
-    # discovery accounting
     count_initial_discovery: bool = False
 
     def __post_init__(self):
+        """Validate configuration settings and checkpoint positioning."""
         assert self.mal_on_pickup in ("destroy", "carry")
         assert self.service_priority in ("urgency", "index", "random")
         assert self.tiebreak in ("index", "random")
@@ -131,14 +118,17 @@ _C_CLAIM = (0.8, 0.0, 0.8)
 _C_SELF = (1.0, 0.9, 0.0)
 _C_AGENT_OTHER = (0.15, 0.3, 0.9)
 _ITEM_COL = {PERSIST: (0.95, 0.85, 0.2), TEMP: (1.0, 0.5, 0.0), MAL: (0.85, 0.1, 0.1)}
-_AGENT_COLS = [(0.15, 0.3, 0.9), (0.0, 0.6, 0.6), (0.6, 0.2, 0.8), (0.1, 0.5, 0.1),
-               (0.5, 0.3, 0.0), (0.9, 0.3, 0.6), (0.3, 0.3, 0.3), (0.0, 0.0, 0.6)]
+_AGENT_COLS = [
+    (0.15, 0.3, 0.9), (0.0, 0.6, 0.6), (0.6, 0.2, 0.8), (0.1, 0.5, 0.1),
+    (0.5, 0.3, 0.0), (0.9, 0.3, 0.6), (0.3, 0.3, 0.3), (0.0, 0.0, 0.6)
+]
 
 
 class SwarmSearchEnv(ParallelEnv):
     metadata = {"name": "swarm_search_v1", "render_modes": ["ansi", "rgb_array"]}
 
     def __init__(self, config: Optional[EnvConfig] = None, render_mode: Optional[str] = None):
+        """Initialize environment configuration, agent identifiers, and RNG."""
         self.cfg = config or EnvConfig()
         self.render_mode = render_mode
         self.possible_agents = [f"robot_{i}" for i in range(self.cfg.n_agents)]
@@ -149,15 +139,17 @@ class SwarmSearchEnv(ParallelEnv):
 
     @property
     def checkpoint_xy(self):
+        """Return checkpoint location as (x, y)."""
         return (self.checkpoint[1], self.checkpoint[0])
 
     @property
     def depot(self):
+        """Return checkpoint location as (y, x)."""
         return self.checkpoint
 
-    # ---------------------------------------------------------------- spaces
     @functools.lru_cache(maxsize=None)
     def observation_space(self, agent):
+        """Return Dict observation space for agent."""
         c = self.cfg
         w = 2 * c.view_radius + 1
         return spaces.Dict({
@@ -168,17 +160,19 @@ class SwarmSearchEnv(ParallelEnv):
 
     @functools.lru_cache(maxsize=None)
     def action_space(self, agent):
+        """Return discrete action space for agent."""
         return spaces.Discrete(N_ACTIONS)
 
     @property
     def state_space(self):
+        """Return centralized state space box."""
         c = self.cfg
         n = c.height * c.width * 7 + c.n_agents * 4 + 2
         return spaces.Box(-1.0, 1.0, (n,), np.float32)
 
-    # ---------------------------------------------------------- map building
     @staticmethod
     def _bfs(grid: np.ndarray, start) -> np.ndarray:
+        """Compute 2D shortest-path distance array from start."""
         H, W = grid.shape
         dist = -np.ones((H, W), dtype=np.int32)
         dist[start] = 0
@@ -193,9 +187,9 @@ class SwarmSearchEnv(ParallelEnv):
         return dist
 
     def _generate_map(self):
+        """Generate connected random grid map satisfying density and reachability."""
         c = self.cfg
-        need = (c.n_agents + c.n_persistent + c.n_malicious
-                + max(c.n_temp_initial, c.max_temp_active) + 1)
+        need = (c.n_agents + c.n_persistent + c.n_malicious + max(c.n_temp_initial, c.max_temp_active) + 1)
         fixed = None if c.checkpoint_xy is None else (int(c.checkpoint_xy[1]), int(c.checkpoint_xy[0]))
         for _ in range(1000):
             dens = self.rng.uniform(*c.obstacle_density)
@@ -219,8 +213,8 @@ class SwarmSearchEnv(ParallelEnv):
             return
         raise RuntimeError("Could not generate a valid map; relax obstacle_density/min_free_frac.")
 
-    # --------------------------------------------------------------- items
     def _new_item(self, typ, pos, expiry=np.inf) -> Item:
+        """Create and register a new item."""
         c = self.cfg
         value = {PERSIST: c.v_low, TEMP: c.v_high, MAL: -c.p_mal}[typ]
         it = Item(id=self._next_id, type=typ, pos=pos, spawn=self.t, expiry=expiry, value=value)
@@ -229,6 +223,7 @@ class SwarmSearchEnv(ParallelEnv):
         return it
 
     def _random_free_cell(self, exclude):
+        """Sample an unoccupied free cell not in exclude."""
         for _ in range(200):
             y, x = self.free_cells[self.rng.integers(len(self.free_cells))]
             p = (int(y), int(x))
@@ -237,7 +232,7 @@ class SwarmSearchEnv(ParallelEnv):
         return None
 
     def _spawn_item(self, typ) -> bool:
-        """Spawn a single item of *typ* at a random free cell. Returns True on success."""
+        """Spawn a single item of typ at a random free cell."""
         pos = self._random_free_cell(set(self.active) | set(self.pos))
         if pos is None:
             return False
@@ -250,18 +245,20 @@ class SwarmSearchEnv(ParallelEnv):
         return True
 
     def _spawn_temp(self) -> bool:
+        """Spawn a temporary item."""
         return self._spawn_item(TEMP)
 
     def _count_type(self, typ) -> int:
-        """Count live items of *typ* (on the ground + carried)."""
+        """Count active ground and carried items of typ."""
         n = sum(1 for it in self.active.values() if it.type == typ)
         return n + sum(1 for it in self.carry if it is not None and it.type == typ)
 
     def _n_temp_alive(self):
+        """Count active temporary items."""
         return self._count_type(TEMP)
 
-    # ---------------------------------------------------------------- reset
     def reset(self, seed=None, options=None):
+        """Reset environment state, generate map, and place agents."""
         c = self.cfg
         n = c.n_agents
         if seed is not None:
@@ -296,8 +293,6 @@ class SwarmSearchEnv(ParallelEnv):
             "distance": [0] * n,
             "ep_return": 0.0,
         }
-
-        # place agents near the checkpoint
         R = c.start_radius
         d = self.checkpoint_dist
         cand = np.argwhere((d > 0) & (d <= R))
@@ -307,7 +302,6 @@ class SwarmSearchEnv(ParallelEnv):
         idx = self.rng.choice(len(cand), n, replace=False)
         self.pos = [tuple(int(v) for v in cand[i]) for i in idx]
 
-        # spawn initial objects
         taken = set(self.pos)
         for typ, k in ((PERSIST, c.n_persistent), (MAL, c.n_malicious)):
             for _ in range(k):
@@ -317,7 +311,6 @@ class SwarmSearchEnv(ParallelEnv):
         for _ in range(c.n_temp_initial):
             self._spawn_item(TEMP)
 
-        # initial visibility
         _, init_items = self._update_visibility(count_personal=c.count_initial_discovery)
         if c.count_initial_discovery:
             for it in init_items:
@@ -327,12 +320,8 @@ class SwarmSearchEnv(ParallelEnv):
 
         return self._observations(), self._infos({})
 
-    # ----------------------------------------------------------- visibility
     def _update_visibility(self, count_personal: bool = True):
-        """Reveal the Chebyshev window around every robot.
-        Updates both the team-wide ``self.known`` and per-agent
-        ``self._agent_known`` / ``self._seen_by`` maps.
-        Returns (fraction of newly revealed cells, list of newly discovered items)."""
+        """Reveal Chebyshev sensing windows and register newly discovered items."""
         c = self.cfg
         before = int(self.known.sum())
         r = c.view_radius
@@ -354,14 +343,15 @@ class SwarmSearchEnv(ParallelEnv):
                         new_items.append(it)
         return new_frac, new_items
 
-    # ---------------------------------------------------- claims / targets
     def _order(self, idxs, mode):
+        """Order agent indices deterministically or via random permutation."""
         idxs = sorted(idxs)
         if mode == "random" and len(idxs) > 1:
             return [int(v) for v in self.rng.permutation(idxs)]
         return idxs
 
     def _clear_claim(self, it: Item):
+        """Clear claiming agent assignment from item."""
         j = it.claimed_by
         if j is not None:
             if self.target[j] == it.id:
@@ -371,18 +361,21 @@ class SwarmSearchEnv(ParallelEnv):
                 it.status = Status.AVAILABLE
 
     def _release(self, i):
+        """Release claim on target assigned to agent i."""
         tgt = self.target[i]
         if tgt is not None:
             self._clear_claim(self.objects[tgt])
         self.target[i] = None
 
     def _resolve_target(self, v) -> Optional[Item]:
+        """Resolve item ID or coordinate tuple into Item."""
         if isinstance(v, (int, np.integer)):
             return self.objects.get(int(v))
         y, x = v
         return self.active.get((int(y), int(x)))
 
     def _apply_targets(self, targets):
+        """Process item target claims submitted by agents."""
         reqs = []
         for a, v in targets.items():
             if a not in self._idx:
@@ -393,7 +386,8 @@ class SwarmSearchEnv(ParallelEnv):
                 reqs.append(self._idx[a])
         for i in self._order(reqs, self.cfg.tiebreak):
             it = self._resolve_target(targets[self.possible_agents[i]])
-            if (it is None or self.carry[i] is not None or it.type == MAL or not it.seen
+            if (it is None or self.carry[i] is not None or it.type == MAL
+                    or not self._is_item_visible_to(i, it)
                     or it.status not in (Status.AVAILABLE, Status.CLAIMED)):
                 self.stats["invalid_targets"] += 1
                 continue
@@ -405,8 +399,8 @@ class SwarmSearchEnv(ParallelEnv):
             self._release(i)
             it.status, it.claimed_by, self.target[i] = Status.CLAIMED, i, it.id
 
-    # ---------------------------------------------------------------- step
     def step(self, actions, targets=None):
+        """Advance simulation by executing actions and handling events."""
         c = self.cfg
         assert self.agents, "call reset() first"
         comp = dict(time=-c.c_time, collision=0.0, invalid=0.0, map=0.0,
@@ -421,7 +415,6 @@ class SwarmSearchEnv(ParallelEnv):
                 v = STAY
             acts.append(v)
 
-        # 0) bookkeeping
         self.stats["carrying_per_step"].append(sum(it is not None for it in self.carry))
         for i, it in enumerate(self.carry):
             if it is not None:
@@ -429,7 +422,6 @@ class SwarmSearchEnv(ParallelEnv):
         if targets:
             self._apply_targets(targets)
 
-        # 1a) pickups
         pickers = {}
         for i, a in enumerate(acts):
             if a != PICK:
@@ -443,7 +435,6 @@ class SwarmSearchEnv(ParallelEnv):
             self.stats["pickup_conflicts"] += len(idxs) - 1
             comp["delivery"] += self._do_pickup(winner, self.active.pop(pos))
 
-        # 1b) deliveries
         droppers = []
         for i, a in enumerate(acts):
             if a != DROP:
@@ -460,13 +451,11 @@ class SwarmSearchEnv(ParallelEnv):
         for i in served:
             comp["delivery"] += self._do_delivery(i)
 
-        # 2) movement
         n_col = self._move(acts)
         comp["collision"] = -c.c_collision * n_col
         comp["invalid"] = -c.c_invalid * n_inv
         self.stats["collisions"] += n_col
 
-        # 3) time, expiry, spawning
         self.t += 1
         if not c.temp_expires_while_carried:
             for it in self.carry:
@@ -482,7 +471,6 @@ class SwarmSearchEnv(ParallelEnv):
                 self._expire(it)
                 self.carry[i] = None
 
-        # dynamic spawning — all three types
         if self._count_type(TEMP) < c.max_temp_active and self.rng.random() < c.temp_spawn_prob:
             if self._spawn_item(TEMP):
                 self.stats["temp_spawned"] += 1
@@ -495,8 +483,14 @@ class SwarmSearchEnv(ParallelEnv):
                 if self._spawn_item(MAL):
                     self.stats["mal_spawned"] += 1
 
-        # 4) discovery
         new_frac, new_items = self._update_visibility(count_personal=True)
+        if c.info_mode == "window":
+            win_mask = self._union_view()
+            for i, tgt_id in enumerate(self.target):
+                if tgt_id is not None:
+                    it = self.objects[tgt_id]
+                    if not win_mask[it.pos]:
+                        self._release(i)
         comp["map"] = c.alpha_map * new_frac
         for it in new_items:
             comp["discover"] += c.b_discover[it.type]
@@ -504,9 +498,7 @@ class SwarmSearchEnv(ParallelEnv):
             if it.discovered_by is not None:
                 self.stats["discovered_by_agent"][it.discovered_by] += 1
 
-        # 5) coordination
         comp["coordination"] = self._coordination()
-
         reward = float(sum(comp.values()))
         self.stats["ep_return"] += reward
 
@@ -525,8 +517,8 @@ class SwarmSearchEnv(ParallelEnv):
             self.agents = []
         return obs, rewards, terms, truncs, infos
 
-    # -------------------------------------------------------- step helpers
     def _can_pick(self, i):
+        """Check if agent i can pick an item at its current position."""
         if self.carry[i] is not None:
             return False
         it = self.active.get(self.pos[i])
@@ -539,9 +531,11 @@ class SwarmSearchEnv(ParallelEnv):
         return True
 
     def _can_drop(self, i):
+        """Check if agent i can drop an item at checkpoint."""
         return self.carry[i] is not None and self.pos[i] == self.checkpoint
 
     def _do_pickup(self, i, it: Item) -> float:
+        """Handle item pickup by agent i."""
         c = self.cfg
         self._clear_claim(it)
         it.collected_by, it.pickup_t = i, self.t
@@ -554,7 +548,7 @@ class SwarmSearchEnv(ParallelEnv):
             if c.mal_on_pickup == "destroy":
                 it.status, it.end_t = Status.DISPOSED, self.t
                 self.stats["disposed"] += 1
-                self._release(i)  # release agent's prior claim
+                self._release(i)
                 return pen
         self._release(i)
         it.status = Status.CARRIED
@@ -562,6 +556,7 @@ class SwarmSearchEnv(ParallelEnv):
         return pen
 
     def _select_served(self, idxs):
+        """Select dropping agents served up to checkpoint service rate."""
         k = self.cfg.checkpoint_service_rate
         if k is None or len(idxs) <= k:
             return list(idxs)
@@ -571,13 +566,11 @@ class SwarmSearchEnv(ParallelEnv):
         elif mode == "index":
             order = sorted(idxs)
         else:
-            def key(i):
-                it = self.carry[i]
-                return (it.expiry - self.t if it.type == TEMP else float("inf"), i)
-            order = sorted(idxs, key=key)
+            order = sorted(idxs, key=lambda i: (self.carry[i].expiry - self.t if self.carry[i].type == TEMP else float("inf"), i))
         return order[:k]
 
     def _do_delivery(self, i) -> float:
+        """Process item delivery at checkpoint by agent i."""
         it = self.carry[i]
         assert it is not None and it.status == Status.CARRIED, "double delivery"
         self.carry[i] = None
@@ -599,15 +592,18 @@ class SwarmSearchEnv(ParallelEnv):
         return it.value
 
     def _expire(self, it: Item):
+        """Mark item expired and update statistics."""
         it.status, it.end_t = Status.EXPIRED, self.t
         self.stats["expired_by_type"][it.type] += 1
         if it.seen:
             self.stats["expired_after_discovery"] += 1
 
     def _in_free(self, y, x):
+        """Check if (y, x) is an in-bounds free grid cell."""
         return 0 <= y < self.cfg.height and 0 <= x < self.cfg.width and not self.grid[y, x]
 
     def _move(self, acts):
+        """Simulate agent movements and resolve collisions."""
         n = self.cfg.n_agents
         stack = self.cfg.checkpoint_stacking
         cp = self.checkpoint
@@ -645,19 +641,20 @@ class SwarmSearchEnv(ParallelEnv):
         return int(sum(col))
 
     def _coordination(self):
+        """Calculate crowding penalty around visible valuable items."""
         c = self.cfg
         pen = 0.0
         free_agents = [self.pos[i] for i in range(c.n_agents) if self.carry[i] is None]
         for p, it in self.active.items():
             if not it.seen or it.type == MAL:
                 continue
-            k = sum(1 for q in free_agents
-                    if max(abs(q[0] - p[0]), abs(q[1] - p[1])) <= c.crowd_radius)
+            k = sum(1 for q in free_agents if max(abs(q[0] - p[0]), abs(q[1] - p[1])) <= c.crowd_radius)
             if k >= 2:
                 pen -= c.coord_penalty * (k - 1)
         return pen
 
     def action_mask(self, agent):
+        """Return legal action boolean mask for agent."""
         i = self._idx[agent]
         m = np.zeros(N_ACTIONS, dtype=bool)
         y, x = self.pos[i]
@@ -668,8 +665,8 @@ class SwarmSearchEnv(ParallelEnv):
         m[DROP] = self._can_drop(i)
         return m
 
-    # --------------------------------------------------------- agent state
     def _mode(self, i) -> Mode:
+        """Return agent task Mode (RETURN, PURSUE, or EXPLORE)."""
         if self.carry[i] is not None:
             return Mode.RETURN
         if self.target[i] is not None:
@@ -677,6 +674,7 @@ class SwarmSearchEnv(ParallelEnv):
         return Mode.EXPLORE
 
     def agent_state(self, agent):
+        """Return dictionary summary of agent state."""
         i = self._idx[agent]
         y, x = self.pos[i]
         carried, mode = self.carry[i], self._mode(i)
@@ -698,15 +696,15 @@ class SwarmSearchEnv(ParallelEnv):
         }
 
     def agent_states(self):
+        """Return dictionary of agent state summaries for all agents."""
         return {a: self.agent_state(a) for a in self.possible_agents}
 
-    # ------------------------------------------------------ observations
     def _remaining_frac(self, it):
+        """Return remaining life fraction of item."""
         return float(np.clip((it.expiry - self.t) / self._life_max, 0.0, 1.0))
 
     def _item_channels(self, seen_only):
-        """Item channels over the full map. When *seen_only* is False the
-        ground-truth positions are returned (used for local windows)."""
+        """Return 3-channel spatial map of items."""
         ch = np.zeros((3, self.cfg.height, self.cfg.width), dtype=np.float32)
         for (y, x), it in self.active.items():
             if seen_only and not it.seen:
@@ -715,30 +713,42 @@ class SwarmSearchEnv(ParallelEnv):
         return ch
 
     def _agent_map(self):
+        """Return 2D occupancy grid of agent locations."""
         m = np.zeros((self.cfg.height, self.cfg.width), dtype=np.float32)
         for (y, x) in self.pos:
             m[y, x] = 1.0
         return m
 
+    def _is_item_visible_to(self, i: int, it: Item) -> bool:
+        """Check whether item is known or visible to agent i under info_mode."""
+        mode = self.cfg.info_mode
+        if mode == "shared":
+            return it.seen
+        if mode == "private":
+            return it.id in self._seen_by[i]
+        r = self.cfg.view_radius
+        py, px = it.pos
+        return any(max(abs(py - y), abs(px - x)) <= r for y, x in self.pos)
+
     def _belief_dist(self):
-        """Team-wide belief distance (shared mode)."""
+        """Compute team belief distance matrix to checkpoint."""
         if self.cfg.slack_uses_true_path:
             return self.checkpoint_dist
         return self._bfs(self.known & self.grid, self.checkpoint)
 
     def _belief_dist_for(self, agent_known):
-        """Belief distance to the checkpoint over the cells in *agent_known*."""
+        """Compute belief distance matrix to checkpoint using specified known grid."""
         if self.cfg.slack_uses_true_path:
             return self.checkpoint_dist
         return self._bfs(agent_known & self.grid, self.checkpoint)
 
     def _plen(self, bdist, p):
+        """Return distance to checkpoint or grid dimension upper bound."""
         v = int(bdist[p])
         return v if v >= 0 else self.cfg.height + self.cfg.width
 
     def _union_view(self):
-        """Cells inside ANY robot's current sensing window (window mode, current-view sharing).
-        Recomputed every call: nothing persists once no robot is looking at a cell."""
+        """Compute collective sensing window union of all agents."""
         c = self.cfg
         r = c.view_radius
         k = np.zeros((c.height, c.width), dtype=bool)
@@ -747,32 +757,30 @@ class SwarmSearchEnv(ParallelEnv):
         return k
 
     def _effective_known(self, i):
-        """Known-cells map of robot *i* (private mode: its own accumulated map)."""
+        """Return accumulated known grid for agent i."""
         return self._agent_known[i]
 
     def _visible_item_ids(self, i):
-        """Item IDs robot *i* has seen so far (private mode)."""
+        """Return set of item IDs observed by agent i."""
         return self._seen_by[i]
 
     def _observations(self):
+        """Assemble observation dictionaries for all agents."""
         c = self.cfg
         r, H, W = c.view_radius, c.height, c.width
         w = 2 * r + 1
         mode = c.info_mode
 
-        # full-world tensor for extracting local windows (always ground truth)
         items_all = self._item_channels(seen_only=False)
         agents_all = self._agent_map()
         cp = np.zeros((H, W), dtype=np.float32)
         cp[self.checkpoint] = 1.0
-        world = np.concatenate([
-            self.grid[None].astype(np.float32), items_all, cp[None], agents_all[None]], axis=0)
+        world = np.concatenate([self.grid[None].astype(np.float32), items_all, cp[None], agents_all[None]], axis=0)
         padded = np.pad(world, ((0, 0), (r, r), (r, r)))
         if r > 0:
             padded[0, :r, :] = padded[0, -r:, :] = 1.0
             padded[0, :, :r] = padded[0, :, -r:] = 1.0
 
-        # team-wide map, computed once: persistent (shared) or current union of views (window)
         if mode in ("shared", "window"):
             if mode == "shared":
                 kn = self.known
@@ -783,14 +791,14 @@ class SwarmSearchEnv(ParallelEnv):
             titems_s = np.zeros((3, H, W), dtype=np.float32)
             claimed_s = np.zeros((H, W), dtype=np.float32)
             for it in vis_items:
-                titems_s[it.type, it.pos[0], it.pos[1]] = (
-                    self._remaining_frac(it) if it.type == TEMP else 1.0)
+                titems_s[it.type, it.pos[0], it.pos[1]] = self._remaining_frac(it) if it.type == TEMP else 1.0
                 if it.status == Status.CLAIMED:
                     claimed_s[it.pos] = 1.0
             team_s = np.concatenate([
                 kn[None].astype(np.float32),
                 (kn & self.grid)[None].astype(np.float32),
-                titems_s, agents_all[None], claimed_s[None]], axis=0)
+                titems_s, agents_all[None], claimed_s[None]
+            ], axis=0)
             kval_s = [it for it in vis_items if it.type != MAL]
             bdist_s = self._belief_dist_for(kn)
 
@@ -798,7 +806,7 @@ class SwarmSearchEnv(ParallelEnv):
         for i, a in enumerate(self.possible_agents):
             y, x = self.pos[i]
             local = padded[:, y: y + w, x: x + w].copy()
-            local[5, r, r] = 0.0  # remove self
+            local[5, r, r] = 0.0
 
             if mode in ("shared", "window"):
                 team = team_s.copy()
@@ -807,21 +815,18 @@ class SwarmSearchEnv(ParallelEnv):
             else:
                 ak = self._effective_known(i)
                 vis = self._visible_item_ids(i)
-
                 titems_i = np.zeros((3, H, W), dtype=np.float32)
                 claimed_i = np.zeros((H, W), dtype=np.float32)
                 known_val = []
                 for p, it in self.active.items():
                     if it.id not in vis:
                         continue
-                    titems_i[it.type, p[0], p[1]] = (
-                        self._remaining_frac(it) if it.type == TEMP else 1.0)
+                    titems_i[it.type, p[0], p[1]] = self._remaining_frac(it) if it.type == TEMP else 1.0
                     if it.status == Status.CLAIMED:
                         claimed_i[p] = 1.0
                     if it.type != MAL:
                         known_val.append(it)
 
-                # agents channel: only those in the sensing window
                 agents_vis = np.zeros((H, W), dtype=np.float32)
                 for j, (jy, jx) in enumerate(self.pos):
                     if max(abs(jy - y), abs(jx - x)) <= r:
@@ -830,18 +835,20 @@ class SwarmSearchEnv(ParallelEnv):
                 team = np.concatenate([
                     ak[None].astype(np.float32),
                     (ak & self.grid)[None].astype(np.float32),
-                    titems_i, agents_vis[None], claimed_i[None]], axis=0)
+                    titems_i, agents_vis[None], claimed_i[None]
+                ], axis=0)
                 bdist = self._belief_dist_for(ak)
 
-            obs[a] = {"local": local, "team_map": team,
-                      "scalars": self._scalars(i, known_val, bdist)}
+            obs[a] = {"local": local, "team_map": team, "scalars": self._scalars(i, known_val, bdist)}
         return obs
 
     def _slack(self, i, it, bdist):
+        """Compute deadline slack for temporary item pickup and delivery."""
         d_item = abs(self.pos[i][0] - it.pos[0]) + abs(self.pos[i][1] - it.pos[1])
         return it.expiry - self.t - (d_item + self._plen(bdist, it.pos) + HANDLING_TIME)
 
     def _scalars(self, i, known_val, bdist):
+        """Construct scalar observation vector for agent i."""
         c = self.cfg
         y, x = self.pos[i]
         carried = self.carry[i]
@@ -882,6 +889,7 @@ class SwarmSearchEnv(ParallelEnv):
         return np.clip(s, -1.0, 1.0)
 
     def _infos(self, comp):
+        """Build info dictionary for current step."""
         infos = {}
         n_carry = sum(it is not None for it in self.carry)
         for a in self.agents:
@@ -894,10 +902,8 @@ class SwarmSearchEnv(ParallelEnv):
             }
         return infos
 
-    # -------------------------------------------------------- critic state
     def state(self):
-        """Full global state for a centralized critic (CTDE).
-        Contains hidden information by design."""
+        """Construct centralized critic global state vector."""
         c = self.cfg
         items = self._item_channels(seen_only=False)
         cp = np.zeros((c.height, c.width), dtype=np.float32)
@@ -906,18 +912,18 @@ class SwarmSearchEnv(ParallelEnv):
         for i in range(c.n_agents):
             y, x = self.pos[i]
             carried = self.carry[i]
-            agent_feats += [y / c.height, x / c.width, float(carried is not None),
-                            self._remaining_frac(carried) if (carried and carried.type == TEMP) else 0.0]
+            agent_feats += [
+                y / c.height, x / c.width, float(carried is not None),
+                self._remaining_frac(carried) if (carried and carried.type == TEMP) else 0.0
+            ]
         return np.concatenate([
             self.grid.astype(np.float32).ravel(), cp.ravel(), items.ravel(),
             self.known.astype(np.float32).ravel(), self._agent_map().ravel(),
-            np.array(agent_feats + [self.t / c.max_steps,
-                                    min(self.stats["deliveries"] / (c.target_deliveries or 20), 1.0)],
-                     dtype=np.float32)]).astype(np.float32)
+            np.array(agent_feats + [self.t / c.max_steps, min(self.stats["deliveries"] / (c.target_deliveries or 20), 1.0)], dtype=np.float32)
+        ]).astype(np.float32)
 
-    # --------------------------------------------------------- invariants
     def check_invariants(self):
-        """Raises AssertionError if object lifecycle / claim bookkeeping is broken."""
+        """Assert environment and item state consistency."""
         on_world = set()
         for p, it in self.active.items():
             assert it.status in (Status.AVAILABLE, Status.CLAIMED) and it.pos == p
@@ -942,8 +948,8 @@ class SwarmSearchEnv(ParallelEnv):
         assert len(cells) == len(set(cells)), "two agents share a non-checkpoint cell"
         assert all(not self.grid[p] for p in self.pos), "agent inside an obstacle"
 
-    # ---------------------------------------------------------- rendering
     def render(self, cell_px: int = 24, view: str = "both", agent=0):
+        """Render environment frame or ANSI text."""
         if self.render_mode == "ansi":
             return self._render_ansi()
         if self.render_mode == "rgb_array":
@@ -951,10 +957,11 @@ class SwarmSearchEnv(ParallelEnv):
         return None
 
     def close(self):
-        """Clean up environment resources (PettingZoo API)."""
+        """Clean up environment resources."""
         pass
 
     def _render_ansi(self):
+        """Render ANSI text string of grid and agents."""
         c = self.cfg
         rows = [["#" if self.grid[y, x] else "." for x in range(c.width)] for y in range(c.height)]
         sym = {PERSIST: "p", TEMP: "T", MAL: "m"}
@@ -967,15 +974,17 @@ class SwarmSearchEnv(ParallelEnv):
 
     @staticmethod
     def _kron(base, px):
+        """Scale pixel grid by px using Kronecker product."""
         return (np.kron(base, np.ones((px, px, 1))) * 255).astype(np.uint8)
 
     @staticmethod
     def _paint(img, y, x, px, color, inset=0):
-        img[y * px + inset:(y + 1) * px - inset, x * px + inset:(x + 1) * px - inset] = \
-            (np.asarray(color) * 255).astype(np.uint8)
+        """Fill cell rectangle with color."""
+        img[y * px + inset:(y + 1) * px - inset, x * px + inset:(x + 1) * px - inset] = (np.asarray(color) * 255).astype(np.uint8)
 
     @staticmethod
     def _frame(img, y0, x0, y1, x1, px, color, t=2):
+        """Draw outline frame around bounding coordinates."""
         col = (np.asarray(color) * 255).astype(np.uint8)
         Y0, Y1, X0, X1 = y0 * px, (y1 + 1) * px, x0 * px, (x1 + 1) * px
         img[Y0:Y0 + t, X0:X1] = col
@@ -985,6 +994,7 @@ class SwarmSearchEnv(ParallelEnv):
 
     @staticmethod
     def _hcat(imgs, gap=10):
+        """Concatenate image arrays horizontally."""
         h = max(im.shape[0] for im in imgs)
         out = []
         for k, im in enumerate(imgs):
@@ -996,6 +1006,7 @@ class SwarmSearchEnv(ParallelEnv):
         return np.concatenate(out, axis=1)
 
     def render_view(self, view="both", px=24, agent=0, fog=True):
+        """Render specified view mode."""
         i = self._idx[agent] if isinstance(agent, str) else int(agent)
         if view == "true":
             return self._render_true(px, fog=fog)
@@ -1005,6 +1016,7 @@ class SwarmSearchEnv(ParallelEnv):
         return self._hcat([self._render_true(px, fog=fog), self.render_observation(obs, px)])
 
     def _render_true(self, px=24, fog=True):
+        """Render ground-truth view with optional fog of war."""
         c = self.cfg
         H, W, r = c.height, c.width, c.view_radius
         win_mask = self._union_view() if (fog and c.info_mode == "window") else None
@@ -1020,8 +1032,7 @@ class SwarmSearchEnv(ParallelEnv):
             base[self.checkpoint] = _C_CP
         img = self._kron(base, px)
         for i, (y, x) in enumerate(self.pos):
-            self._frame(img, max(0, y - r), max(0, x - r), min(H - 1, y + r), min(W - 1, x + r),
-                        px, _AGENT_COLS[i % len(_AGENT_COLS)], 2)
+            self._frame(img, max(0, y - r), max(0, x - r), min(H - 1, y + r), min(W - 1, x + r), px, _AGENT_COLS[i % len(_AGENT_COLS)], 2)
         for (y, x), it in self.active.items():
             is_vis = (not fog) or (bool(win_mask[y, x]) if win_mask is not None else it.seen)
             if is_vis:
@@ -1035,15 +1046,15 @@ class SwarmSearchEnv(ParallelEnv):
         return img
 
     def render_true_nofog(self, px=24):
-        """Ground-truth rendering with fog disabled (for debugging).
-        Does NOT mutate env state."""
+        """Render full map without fog of war."""
         return self._render_true(px, fog=False)
 
     def _render_rgb(self, px=24, fog=True):
-        """Backward-compatibility alias."""
+        """Render true map for backwards compatibility."""
         return self._render_true(px, fog=fog)
 
     def render_observation(self, obs, px=24):
+        """Render agent observation map and local field of view."""
         c = self.cfg
         H, W, r = c.height, c.width, c.view_radius
         team, local, sc = obs["team_map"], obs["local"], obs["scalars"]
