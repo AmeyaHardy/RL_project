@@ -282,8 +282,7 @@ class GreedyPolicy:
             for q in np.argwhere(team[5] > 0.5):
                 qy, qx = int(q[0]), int(q[1])
                 if (qy, qx) != pos and (qy, qx) != depot:
-                    if max(abs(qy - pos[0]), abs(qx - pos[1])) <= 2:
-                        plan_free[qy, qx] = False
+                    plan_free[qy, qx] = False
 
             if self._optimistic and prev is not None and prev != pos:
                 plan_no_rev = plan_free.copy()
@@ -293,7 +292,7 @@ class GreedyPolicy:
                 dist_nr, first_nr = None, None
 
             dist, first = bfs(plan_free, pos)
-            base_dist, base_first = bfs(base_free, pos)
+            base_dist, base_first = dist, {}   # never plan THROUGH other robots; wait/wiggle when blocked
             dep_dist, _ = bfs(free, depot)
             dep_opt = bfs(~kobs, depot)[0] if self._optimistic else None
 
