@@ -1,13 +1,5 @@
-"""
-Scripted baseline: frontier exploration + greedy retrieval, using ONLY
-observations (team map + scalars). This is the performance floor
-RL should beat.
+from __future__ import annotations
 
-Usage:
-    python greedy_baseline.py
-    python greedy_baseline.py --episodes 20 --seed 42
-    python greedy_baseline.py --ablate-window
-"""
 import argparse
 from collections import deque
 from typing import Dict, Optional, Set, Tuple
@@ -26,12 +18,7 @@ OPPOSITE = {UP: DOWN, DOWN: UP, LEFT: RIGHT, RIGHT: LEFT}
 
 
 def bfs(free: np.ndarray, start: Tuple[int, int]) -> Tuple[np.ndarray, Dict[Tuple[int, int], int]]:
-    """Breadth-first search on a 2D grid of passable cells.
-
-    Returns:
-        dist: 2D array of shortest-path distances (-1 for unreachable)
-        first: mapping from reachable (y, x) to the first action on the shortest path from start
-    """
+    """Compute shortest path distances and first-step actions on a 2D grid."""
     H, W = free.shape
     dist = -np.ones((H, W), dtype=np.int32)
     first = {}
@@ -52,11 +39,7 @@ def bfs(free: np.ndarray, start: Tuple[int, int]) -> Tuple[np.ndarray, Dict[Tupl
 
 
 def observation_action_mask(obs_a: dict, cfg: EnvConfig) -> np.ndarray:
-    """Derive legal action mask strictly from the agent's observation and public config.
-
-    Actions: [UP, DOWN, LEFT, RIGHT, STAY, PICK, DROP]
-    Zero hidden-state leakage: does NOT inspect env.grid, env.active, or env.carry.
-    """
+    """Derive legal action mask strictly from agent observation and configuration."""
     H, W = cfg.height, cfg.width
     team = obs_a["team_map"]
     sc = obs_a["scalars"]
@@ -73,31 +56,22 @@ def observation_action_mask(obs_a: dict, cfg: EnvConfig) -> np.ndarray:
 
     known = team[0] > 0.5
     kobs = team[1] > 0.5
-
     mask = np.zeros(7, dtype=bool)
 
-    # 1. Movement: check grid boundaries and known obstacles
     for a, (dy, dx) in DIRS.items():
         ny, nx = pos[0] + dy, pos[1] + dx
         if 0 <= ny < H and 0 <= nx < W:
-            # Movement into unknown in-bounds cells is permitted.
-            # Only known obstacles are blocked.
             if not (known[ny, nx] and kobs[ny, nx]):
                 mask[a] = True
 
-    # 2. STAY is always legal
     mask[STAY] = True
 
-    # 3. PICK: legal only if not carrying and an item is observed at pos
     if not carrying:
         has_persist = team[2, pos[0], pos[1]] > 0
         has_temp = team[3, pos[0], pos[1]] > 0
         has_mal = team[4, pos[0], pos[1]] > 0
-        has_item = has_persist or has_temp or has_mal
-
-        if has_item:
+        if has_persist or has_temp or has_mal:
             is_claimed = team[6, pos[0], pos[1]] > 0.5
-            # When claim_blocks_pickup is True, respect channel 6 conservatively
             if cfg.claim_blocks_pickup and is_claimed:
                 mask[PICK] = False
             elif has_mal and not has_persist and not has_temp and cfg.forbid_malicious_pickup:
@@ -105,7 +79,6 @@ def observation_action_mask(obs_a: dict, cfg: EnvConfig) -> np.ndarray:
             else:
                 mask[PICK] = True
 
-    # 4. DROP: legal only if carrying and at the depot
     if carrying:
         at_depot = (pos == depot) or (abs(float(sc[6])) < 1e-4 and abs(float(sc[7])) < 1e-4)
         if at_depot:
@@ -115,17 +88,7 @@ def observation_action_mask(obs_a: dict, cfg: EnvConfig) -> np.ndarray:
 
 
 class GreedyPolicy:
-    """Observation-only scripted baseline with persistent target coordination.
-
-    Features:
-    - Zero hidden-state leakage: action mask and path planning use only observed maps.
-    - Respects claim_blocks_pickup and claimed-items channel (channel 6) conservatively.
-    - Separate visited-frontier tracking per agent in private/window modes, shared in shared mode.
-    - Frontiers marked visited only upon arrival or when no longer a frontier.
-    - Strict deadline feasibility: temporary items require a known, reachable route to depot (no Manhattan fallback).
-    - Seeded, lazy stochastic choices for tie-breaking and wiggling.
-    - Clean reset clearing all per-episode tracking state.
-    """
+    """Observation-only scripted baseline with target coordination and exploration."""
 
     def __init__(self, env: SwarmSearchEnv, seed: int = 0,
                  window_memory: Optional[bool] = None,
@@ -133,25 +96,7 @@ class GreedyPolicy:
                  optimistic_planning: Optional[bool] = None,
                  dedupe: Optional[bool] = None,
                  turn_prob: float = 0.08):
-        """Window-mode switches (None = automatic; all are inactive outside window mode).
-
-        In window mode the observation is the union of every robot's CURRENT window and
-        nothing is remembered by the environment.
-
-        optimistic_planning  plan through cells not currently seen as if passable (unseen
-                             != wall). Needed to reach items/frontiers/depot that are visible
-                             only through a teammate's window. Also relaxes the deadline check
-                             to a best-case (lower-bound) route. Default: on.
-        dedupe               an item is left to a visible teammate that is strictly closer to
-                             it along known-clear paths, so robots do not all chase the same
-                             item. Default: on.
-        momentum             exploration by correlated random walk (keep a heading, turn
-                             rarely) instead of chasing the nearest frontier, which never runs
-                             out when only current views exist. Default: on.
-        window_memory        OPT-IN reference only: the policy stores past shared views itself
-                             (what a recurrent policy could learn). Violates the "no persistent
-                             memory" spirit of window mode, so it is off by default.
-        """
+        """Initialize policy settings, tracking structures, and random generator."""
         self.env = env
         self.cfg = env.cfg
         self.life_max = float(env.cfg.temp_life_range[1])
@@ -164,47 +109,54 @@ class GreedyPolicy:
         self.turn_prob = turn_prob
         self.heading: Dict[str, int] = {}
         self.last_pos: Dict[str, Tuple[int, int]] = {}
+        self.prev_pos: Dict[str, Tuple[int, int]] = {}
         self.mem: Dict[str, dict] = {}
         self._last_t = -1
         self.targets: Dict[str, Tuple[int, int]] = {}
         self.target_type: Dict[str, str] = {}
-        self.visited_frontiers: Set[Tuple[int, int]] = set()  # shared mode
-        self.agent_visited_frontiers: Dict[str, Set[Tuple[int, int]]] = {}  # private/window modes
+        self.visited_frontiers: Set[Tuple[int, int]] = set()
+        self.agent_visited_frontiers: Dict[str, Set[Tuple[int, int]]] = {}
 
     def reset(self):
-        """Reset all episode-specific coordination and exploration state."""
+        """Reset policy coordination and per-episode tracking state."""
         self.targets.clear()
         self.target_type.clear()
         self.visited_frontiers.clear()
         self.agent_visited_frontiers.clear()
         self.heading.clear()
         self.last_pos.clear()
+        self.prev_pos.clear()
         self.mem.clear()
         self._last_t = -1
 
     def observation_action_mask(self, obs_a: dict) -> np.ndarray:
+        """Derive legal action mask for agent observation."""
         return observation_action_mask(obs_a, self.cfg)
 
-    def _wiggle(self, mask: np.ndarray) -> int:
+    def _wiggle(self, mask: np.ndarray, avoid_dir: Optional[int] = None) -> int:
+        """Select a random legal move, avoiding reversal if alternatives exist."""
         valid = np.flatnonzero(mask[:4])
-        if len(valid) > 0:
-            return int(self.rng.choice(valid))
-        return STAY
+        if len(valid) == 0:
+            return STAY
+        if avoid_dir is not None and len(valid) > 1:
+            non_rev = [m for m in valid if m != avoid_dir]
+            if non_rev:
+                return int(self.rng.choice(non_rev))
+        return int(self.rng.choice(valid))
 
-    def _toward(self, mask: np.ndarray, dy: int, dx: int) -> int:
+    def _toward(self, mask: np.ndarray, dy: int, dx: int, avoid_dir: Optional[int] = None) -> int:
+        """Select preferred legal move towards delta offsets."""
         if abs(dy) >= abs(dx):
             prefs = [DOWN if dy > 0 else UP, RIGHT if dx > 0 else LEFT]
         else:
             prefs = [RIGHT if dx > 0 else LEFT, DOWN if dy > 0 else UP]
         for p in prefs:
-            if mask[p] and (dy if p in (UP, DOWN) else dx) != 0:
+            if mask[p] and p != avoid_dir and (dy if p in (UP, DOWN) else dx) != 0:
                 return p
-        return self._wiggle(mask)
+        return self._wiggle(mask, avoid_dir=avoid_dir)
 
-    # ------------------------------------------------------------ window helpers
     def _momentum(self, a: str, mask: np.ndarray, pos: Tuple[int, int]) -> int:
-        """Correlated random walk: keep heading, turn rarely, never reverse unless stuck.
-        If the last move did not change our position (blocked by a robot), turn now."""
+        """Select action maintaining heading with occasional turns."""
         valid = [m for m in range(4) if mask[m]]
         if not valid:
             return STAY
@@ -218,16 +170,16 @@ class GreedyPolicy:
         return h
 
     def _remember(self, obs: dict) -> dict:
-        """(opt-in) Accumulate the shared current views into a policy-side memory and
-        return observations whose team_map holds that memory. Uses only observed data:
-        known cells/obstacles persist; items are refreshed whenever their cell is in view
-        again (so removed items vanish when re-seen) and temp items decay by their deadline."""
+        """Accumulate shared views into policy-side memory buffer."""
         cfg = self.cfg
         H, W = cfg.height, cfg.width
         first = next(iter(obs.values()))
         t = int(round(float(first["scalars"][4]) * cfg.max_steps))
-        if t < self._last_t:           # new episode started without reset()
-            self.mem.clear(); self.heading.clear(); self.last_pos.clear()
+        if t < self._last_t:
+            self.mem.clear()
+            self.heading.clear()
+            self.last_pos.clear()
+            self.prev_pos.clear()
         self._last_t = t
         out = {}
         for a, o in obs.items():
@@ -240,7 +192,7 @@ class GreedyPolicy:
             win = team[0] > 0.5
             m["known"] |= win
             m["kobs"] |= team[1] > 0.5
-            m["type"][win] = -1                       # refresh what is in view now
+            m["type"][win] = -1
             m["exp"][win] = np.inf
             m["type"][team[2] > 0.5] = PERSIST
             tm_ = team[3] > 0
@@ -251,20 +203,30 @@ class GreedyPolicy:
             new = np.zeros_like(team)
             new[0], new[1] = m["known"], m["kobs"]
             new[2] = mt == PERSIST
-            alive = (mt == TEMP) & ((me - t) > 0.5)   # remaining life is an integer >= 1
+            alive = (mt == TEMP) & ((me - t) > 0.5)
             new[3] = np.where(alive, np.clip((me - t) / self.life_max, 0.0, 1.0), 0.0)
             new[4] = mt == MAL
-            new[5:] = team[5:]                        # robots / claims: current view only
+            new[5:] = team[5:]
             out[a] = {**o, "team_map": new}
         return out
 
     def act(self, obs: dict) -> Dict[str, int]:
+        """Compute coordinated actions for all agents from observations."""
         if self._use_memory:
             obs = self._remember(obs)
         cfg = self.cfg
         H, W = cfg.height, cfg.width
         shared = (cfg.info_mode == "shared")
         actions: Dict[str, int] = {}
+
+        carrying_positions = set()
+        if len(obs) > 1:
+            for ag, o_ag in obs.items():
+                sc_ag = o_ag["scalars"]
+                if sc_ag[2] > 0.5:
+                    cy_ag = int(np.clip(round(float(sc_ag[0]) * H), 0, H - 1))
+                    cx_ag = int(np.clip(round(float(sc_ag[1]) * W), 0, W - 1))
+                    carrying_positions.add((cy_ag, cx_ag))
 
         for a, o in obs.items():
             team = o["team_map"]
@@ -284,15 +246,17 @@ class GreedyPolicy:
             carrying = bool(sc[2] > 0.5)
             mask = observation_action_mask(o, cfg)
 
-            # Visited frontiers set: shared for shared mode, per-agent for private/window modes
-            if shared:
-                visited = self.visited_frontiers
-            else:
-                if a not in self.agent_visited_frontiers:
-                    self.agent_visited_frontiers[a] = set()
-                visited = self.agent_visited_frontiers[a]
+            prev = self.prev_pos.get(a)
+            avoid_dir = None
+            if prev is not None and prev != pos:
+                for d_act, (dy, dx) in DIRS.items():
+                    if (pos[0] + dy, pos[1] + dx) == prev:
+                        avoid_dir = d_act
+                        break
+            self.prev_pos[a] = pos
 
-            # Mark frontier as visited only when agent reaches it
+            visited = self.visited_frontiers if shared else self.agent_visited_frontiers.setdefault(a, set())
+
             if self.target_type.get(a) == "frontier":
                 prev_tgt = self.targets.get(a)
                 if prev_tgt is not None and pos == prev_tgt:
@@ -300,110 +264,101 @@ class GreedyPolicy:
                     self.targets.pop(a, None)
                     self.target_type.pop(a, None)
 
-            # Avoid teammate claims in shared or window mode
             teammate_claims = (
                 {tgt for ag, tgt in self.targets.items() if ag != a}
                 if (shared or self._dedupe) else set()
             )
 
-            # Observable valuable items: persistent (ch 2) and temporary (ch 3)
-            # Avoid malicious items (ch 4) as target candidates
             items = {}
             for t in (PERSIST, TEMP):
                 for y, x in np.argwhere(team[2 + t] > 0):
                     p = (int(y), int(x))
-                    # Conservative claim handling: if claim_blocks_pickup is enabled and claimed, skip
                     if cfg.claim_blocks_pickup and team[6, p[0], p[1]] > 0.5:
                         continue
                     items[p] = (t, float(team[2 + t, y, x]))
 
-            # Plan paths around other visible robots to minimize congestion
-            plan_free = free.copy()
+            base_free = (~kobs).copy() if self._optimistic else free.copy()
+            plan_free = base_free.copy()
             for q in np.argwhere(team[5] > 0.5):
                 qy, qx = int(q[0]), int(q[1])
                 if (qy, qx) != pos and (qy, qx) != depot:
-                    plan_free[qy, qx] = False
-
-            # Window mode: cells nobody is currently viewing are unknown, not walls
-            if self._optimistic:
-                plan_free = ~kobs
-                for q in np.argwhere(team[5] > 0.5):
-                    qy, qx = int(q[0]), int(q[1])
-                    if (qy, qx) != pos and (qy, qx) != depot:
+                    if max(abs(qy - pos[0]), abs(qx - pos[1])) <= 2:
                         plan_free[qy, qx] = False
 
-            # Distance from current position
+            if self._optimistic and prev is not None and prev != pos:
+                plan_no_rev = plan_free.copy()
+                plan_no_rev[prev] = False
+                dist_nr, first_nr = bfs(plan_no_rev, pos)
+            else:
+                dist_nr, first_nr = None, None
+
             dist, first = bfs(plan_free, pos)
-            # Distance to depot through known free cells
+            base_dist, base_first = bfs(base_free, pos)
             dep_dist, _ = bfs(free, depot)
             dep_opt = bfs(~kobs, depot)[0] if self._optimistic else None
 
             def dd(p):
-                """Known route length item->depot; optimistic (unknown = passable) if enabled."""
                 v = int(dep_dist[p])
-                if v >= 0 or dep_opt is None:
-                    return v
-                return int(dep_opt[p])
+                return v if (v >= 0 or dep_opt is None) else int(dep_opt[p])
 
-            # CASE 1: Carrying an item -> return to depot
             if carrying:
                 self.targets.pop(a, None)
                 self.target_type.pop(a, None)
                 if (pos == depot or (abs(float(sc[6])) < 1e-4 and abs(float(sc[7])) < 1e-4)) and mask[DROP]:
                     actions[a] = DROP
-                elif depot in first:
+                elif first_nr is not None and depot in first_nr and mask[first_nr[depot]]:
+                    actions[a] = first_nr[depot]
+                elif depot in first and mask[first[depot]]:
                     actions[a] = first[depot]
+                elif depot in base_first and mask[base_first[depot]]:
+                    actions[a] = base_first[depot]
                 elif free[depot]:
                     actions[a] = STAY
                 else:
-                    step = None
-                    if self._optimistic:
-                        opt_free = ~kobs
-                        for q in np.argwhere(team[5] > 0.5):
-                            if (int(q[0]), int(q[1])) not in (pos, depot):
-                                opt_free[int(q[0]), int(q[1])] = False
-                        _, first_o = bfs(opt_free, pos)
-                        step = first_o.get(depot)
-                    actions[a] = step if step is not None else self._toward(
-                        mask, depot[0] - pos[0], depot[1] - pos[1])
+                    actions[a] = self._toward(mask, depot[0] - pos[0], depot[1] - pos[1], avoid_dir=avoid_dir)
+                if actions[a] in DIRS:      # only real moves define a heading (not DROP/PICK/STAY)
+                    self.heading[a] = actions[a]
                 continue
 
-            # CASE 2: At item position and can pick
             if mask[PICK] and pos in items:
                 actions[a] = PICK
                 self.targets.pop(a, None)
                 self.target_type.pop(a, None)
                 continue
 
-            # CASE 3: Pursue an item target
             curr_tgt = self.targets.get(a)
             curr_type = self.target_type.get(a)
             best_item = None
             best_score = -1.0
 
-            # Verify existing persistent item target
-            if curr_type == "item" and curr_tgt is not None:
-                if curr_tgt in items and dist[curr_tgt] >= 0:
+            def item_score(p, t, rem, d_val):
+                val = cfg.v_high if t == TEMP else cfg.v_low
+                if t == TEMP:
+                    val = val + 0.5 * (1.0 - np.clip(rem, 0.0, 1.0))
+                return val / (d_val + 1)
+
+            if curr_type == "item" and curr_tgt is not None and curr_tgt in items:
+                d_curr = dist[curr_tgt] if dist[curr_tgt] >= 0 else base_dist[curr_tgt]
+                if curr_tgt in items and curr_tgt not in teammate_claims and d_curr >= 0:
                     t, rem = items[curr_tgt]
                     is_feasible = True
                     if t == TEMP:
-                        # Feasibility requires a reachable route to depot (no Manhattan distance fallback)
                         if dd(curr_tgt) < 0:
                             is_feasible = False
                         else:
-                            needed = dist[curr_tgt] + 1 + dd(curr_tgt) + 1
+                            needed = d_curr + 1 + dd(curr_tgt) + 1
                             if rem * self.life_max < needed:
                                 is_feasible = False
                     if is_feasible:
                         best_item = curr_tgt
-                        val = cfg.v_high if t == TEMP else cfg.v_low
-                        best_score = val / (dist[curr_tgt] + 1)
+                        best_score = item_score(curr_tgt, t, rem, d_curr)
 
-            # Other robots visible in the (shared) view, for obstacle-aware item deduplication
             others = []
             if self._dedupe:
-                others = [(int(q[0]), int(q[1])) for q in np.argwhere(team[5] > 0.5)
-                          if (int(q[0]), int(q[1])) != pos]
+                others = [
+                    (int(q[0]), int(q[1])) for q in np.argwhere(team[5] > 0.5)
+                    if (int(q[0]), int(q[1])) != pos and (int(q[0]), int(q[1])) not in carrying_positions
+                ]
 
             def owned_by_other(p):
                 if not others:
@@ -417,20 +372,18 @@ class GreedyPolicy:
                         return True
                 return False
 
-            # If no valid active target, select best available item
             if best_item is None:
                 for p, (t, rem) in items.items():
-                    if p in teammate_claims or dist[p] < 0 or owned_by_other(p):
+                    d_p = dist[p] if dist[p] >= 0 else base_dist[p]
+                    if p in teammate_claims or d_p < 0 or owned_by_other(p):
                         continue
                     if t == TEMP:
-                        # Must have established reachable route to depot
                         if dd(p) < 0:
                             continue
-                        needed = dist[p] + 1 + dd(p) + 1
+                        needed = d_p + 1 + dd(p) + 1
                         if rem * self.life_max < needed:
                             continue
-                    val = cfg.v_high if t == TEMP else cfg.v_low
-                    score = val / (dist[p] + 1)
+                    score = item_score(p, t, rem, d_p)
                     if score > best_score:
                         best_score = score
                         best_item = p
@@ -438,18 +391,25 @@ class GreedyPolicy:
             if best_item is not None:
                 self.targets[a] = best_item
                 self.target_type[a] = "item"
-                if best_item in first:
-                    actions[a] = first[best_item]
+                if first_nr is not None and best_item in first_nr and mask[first_nr[best_item]]:
+                    act_choice = first_nr[best_item]
+                elif best_item in first and mask[first[best_item]]:
+                    act_choice = first[best_item]
+                elif best_item in base_first and mask[base_first[best_item]]:
+                    act_choice = base_first[best_item]
                 else:
-                    actions[a] = self._wiggle(mask)
+                    act_choice = self._wiggle(mask, avoid_dir=avoid_dir)
+                actions[a] = act_choice
+                if act_choice in DIRS:
+                    self.heading[a] = act_choice
                 continue
 
-            # CASE 4a: memoryless window mode -> correlated random walk
             if self._use_momentum:
+                self.targets.pop(a, None)
+                self.target_type.pop(a, None)
                 actions[a] = self._momentum(a, mask, pos)
                 continue
 
-            # CASE 4: Frontier exploration
             unk = ~known
             nu = np.zeros_like(known)
             nu[1:] |= unk[:-1]
@@ -459,43 +419,44 @@ class GreedyPolicy:
             frontier = free & nu
 
             chosen_frontier = None
-            # Retain existing valid frontier target if still reachable and unobserved border exists
             if curr_type == "frontier" and curr_tgt is not None:
                 if 0 <= curr_tgt[0] < H and 0 <= curr_tgt[1] < W:
-                    if frontier[curr_tgt] and dist[curr_tgt] > 0:
+                    d_f = dist[curr_tgt] if dist[curr_tgt] > 0 else base_dist[curr_tgt]
+                    if frontier[curr_tgt] and d_f > 0 and curr_tgt not in teammate_claims:
                         chosen_frontier = curr_tgt
 
             if chosen_frontier is None:
                 cands = []
                 for p in np.argwhere(frontier):
                     pt = (int(p[0]), int(p[1]))
-                    if dist[pt] > 0 and pt not in teammate_claims:
-                        is_vis = pt in visited
-                        cands.append((is_vis, dist[pt], pt[0], pt[1], pt))
+                    d_pt = dist[pt] if dist[pt] > 0 else base_dist[pt]
+                    if d_pt > 0 and pt not in teammate_claims:
+                        cands.append((pt in visited, d_pt, pt[0], pt[1], pt))
 
                 if cands:
                     cands.sort()
-                    _, _, _, _, chosen_frontier = cands[0]
+                    chosen_frontier = cands[0][4]
 
             if chosen_frontier is not None:
                 self.targets[a] = chosen_frontier
                 self.target_type[a] = "frontier"
-                # Do NOT mark visited here; marked only upon arrival (or when no longer frontier)
-                if chosen_frontier in first:
+                if chosen_frontier in first and mask[first[chosen_frontier]]:
                     actions[a] = first[chosen_frontier]
+                elif chosen_frontier in base_first and mask[base_first[chosen_frontier]]:
+                    actions[a] = base_first[chosen_frontier]
                 else:
-                    actions[a] = self._wiggle(mask)
+                    actions[a] = self._wiggle(mask, avoid_dir=avoid_dir)
             else:
                 self.targets.pop(a, None)
                 self.target_type.pop(a, None)
-                actions[a] = self._wiggle(mask)
+                actions[a] = self._wiggle(mask, avoid_dir=avoid_dir)
 
         return actions
 
 
 def evaluate(n_episodes: int = 20, seed: int = 0, cfg: Optional[EnvConfig] = None,
              verbose: bool = False, policy_kwargs: Optional[dict] = None):
-    """Run greedy baseline evaluation across multiple episodes and record full metrics."""
+    """Evaluate greedy policy over multiple episodes and return statistics list."""
     if n_episodes < 1:
         raise ValueError("n_episodes must be at least 1")
     cfg = cfg or EnvConfig()
@@ -522,6 +483,7 @@ def evaluate(n_episodes: int = 20, seed: int = 0, cfg: Optional[EnvConfig] = Non
 
 
 def _print_summary(mode: str, rows: list):
+    """Print aggregate metrics summary for evaluation episodes."""
     if not rows:
         print(f"{mode:8s}  No episodes evaluated.")
         return
@@ -536,6 +498,7 @@ def _print_summary(mode: str, rows: list):
 
 
 def main():
+    """CLI entrypoint for running greedy baseline evaluations."""
     p = argparse.ArgumentParser(description="Observation-only Greedy Baseline evaluation")
     p.add_argument("--episodes", type=int, default=20, help="Number of evaluation episodes (>=1)")
     p.add_argument("--seed", type=int, default=0, help="Random seed")
