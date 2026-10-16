@@ -1,23 +1,3 @@
-"""
-Evaluation protocol for SwarmSearchEnv.
-
-Principles
-  * Fixed, disjoint seed splits (train / val / test) -> no map is ever shared between them.
-  * Every policy is run on the SAME seeds, so comparisons are paired (map-to-map variance cancels).
-  * Report bootstrap 95% confidence intervals, never just a mean.
-  * Stress variants (dense / rushed / ...) test generalisation beyond the training distribution.
-
-Policy interface (anything with these two methods works):
-    policy.reset(seed: int)
-    policy.act(obs: dict, infos: dict) -> {agent: action}
-
-Usage
-  python evaluate.py run --policy greedy --info-mode shared --split val --episodes 50 --out res/greedy.json
-  python evaluate.py run --policy random --stage 1 --split val --out res/random.json
-  python evaluate.py run --policy mappo  --checkpoint runs/s1/best.pt --split val --out res/mappo.json
-  python evaluate.py compare res/mappo.json res/greedy.json
-  python evaluate.py plan res/greedy.json --halfwidth 2.0        # how many episodes do I need?
-"""
 from __future__ import annotations
 
 import argparse
@@ -32,11 +12,10 @@ from env import SwarmSearchEnv, EnvConfig
 from stages import (VARIANTS, cfg_from_dict, cfg_to_dict, make_env_config, split_seeds)
 
 METRICS = ["return", "value", "deliveries", "persist_delivered", "temp_delivered",
-           "temp_expired", "temp_capture", "collisions", "malicious_picked", "length"]
+           "temp_expired", "temp_capture", "collisions", "malicious_picked", "length",
+           "coverage", "mean_carrying", "overlap"]      # last three: coordination diagnostics
 PRIMARY = "return"
 
-
-# ----------------------------------------------------------------------- policies
 class GreedyAdapter:
     def __init__(self, env: SwarmSearchEnv, **kw):
         self.env, self.kw, self.pol = env, kw, None
@@ -61,8 +40,6 @@ class RandomAdapter:
     def act(self, obs, infos):
         return {a: int(self.rng.choice(np.flatnonzero(infos[a]["action_mask"]))) for a in obs}
 
-
-# ----------------------------------------------------------------------- running
 def episode_metrics(env: SwarmSearchEnv) -> Dict[str, float]:
     s = env.stats
     dbt, ebt = s["delivered_by_type"], s["expired_by_type"]
@@ -78,16 +55,36 @@ def episode_metrics(env: SwarmSearchEnv) -> Dict[str, float]:
         "collisions": float(s["collisions"]),
         "malicious_picked": float(s.get("malicious_picked", 0)),
         "length": float(s.get("ep_length", env.t)),
+        "coverage": float(env.known.mean()),                                   # fraction of map ever observed
+        "mean_carrying": float(np.mean(s["carrying_per_step"])) if s["carrying_per_step"] else 0.0,
     }
+
+
+def window_overlap(env: SwarmSearchEnv) -> float:
+    """Redundant sensing among robots that are not carrying: cells seen by >=2 windows, in window-areas."""
+    r, H, W = env.cfg.view_radius, env.cfg.height, env.cfg.width
+    cnt = np.zeros((H, W), int)
+    free = [i for i in range(env.cfg.n_agents) if env.carry[i] is None]
+    if len(free) < 2:
+        return 0.0
+    for i in free:
+        y, x = env.pos[i]
+        cnt[max(0, y - r):y + r + 1, max(0, x - r):x + r + 1] += 1
+    return float(np.maximum(cnt - 1, 0).sum()) / (2 * r + 1) ** 2
 
 
 def run_episode(env: SwarmSearchEnv, policy, seed: int) -> Dict[str, float]:
     obs, infos = env.reset(seed=seed)
     policy.reset(seed)
+    ov, n = 0.0, 0
     while env.agents:
         actions = policy.act(obs, infos)
         obs, _, _, _, infos = env.step(actions)
-    return episode_metrics(env)
+        ov += window_overlap(env)
+        n += 1
+    m = episode_metrics(env)
+    m["overlap"] = ov / max(n, 1)
+    return m
 
 
 def evaluate_policy(cfg: EnvConfig, make_policy: Callable[[SwarmSearchEnv], object],
@@ -106,7 +103,6 @@ def evaluate_policy(cfg: EnvConfig, make_policy: Callable[[SwarmSearchEnv], obje
             "env_cfg": cfg_to_dict(cfg), "metrics": metrics, "summary": summarize(metrics)}
 
 
-# ----------------------------------------------------------------------- statistics
 def bootstrap_ci(x: Sequence[float], n_boot: int = 5000, alpha: float = 0.05, seed: int = 0):
     x = np.asarray(x, dtype=float)
     x = x[~np.isnan(x)]
@@ -146,24 +142,30 @@ def format_summary(res: dict) -> str:
     lines = [f"{res['label']}  |  split={res['split']} variant={res['variant']} "
              f"episodes={len(res['seeds'])} info_mode={res['env_cfg']['info_mode']}"]
     for k in METRICS:
+        if k not in res["summary"]:                  # JSONs written before the coordination metrics existed
+            continue
         s = res["summary"][k]
         lines.append(f"  {k:18s} {s['mean']:8.2f}   95% CI [{s['ci_lo']:8.2f}, {s['ci_hi']:8.2f}]   std {s['std']:6.2f}")
     return "\n".join(lines)
 
-
-# ----------------------------------------------------------------------- CLI
 def build_policy_factory(args, ckpt_cfg: Optional[dict]):
     if args.policy == "greedy":
         return lambda env: GreedyAdapter(env)
     if args.policy == "random":
         return lambda env: RandomAdapter(env)
+    if args.policy == "scripted":                    # hand-written goal chooser + the same executor (no torch)
+        from hier import ScriptedHierPolicy
+        return lambda env: ScriptedHierPolicy(env)
+    if args.policy == "hmappo":
+        from hmappo import HMappoPolicy
+        return lambda env: HMappoPolicy.from_checkpoint(args.checkpoint, env.cfg, deterministic=not args.stochastic)
     from mappo import MappoPolicy                    # lazy: only needs torch for learned policies
     return lambda env: MappoPolicy.from_checkpoint(args.checkpoint, deterministic=not args.stochastic)
 
 
 def cmd_run(args):
     ckpt_cfg = None
-    if args.policy == "mappo":
+    if args.policy in ("mappo", "hmappo"):
         import torch
         ckpt_cfg = torch.load(args.checkpoint, map_location="cpu", weights_only=False)["env_cfg"]
         cfg = cfg_from_dict(ckpt_cfg, variant=args.variant)
@@ -172,7 +174,7 @@ def cmd_run(args):
         for k, v in VARIANTS[args.variant].items():
             setattr(cfg, k, v)
     seeds = split_seeds(args.split, args.episodes)
-    label = args.label or (args.policy if args.policy != "mappo" else os.path.basename(args.checkpoint))
+    label = args.label or (args.policy if args.policy not in ("mappo", "hmappo") else os.path.basename(args.checkpoint))
     res = evaluate_policy(cfg, build_policy_factory(args, ckpt_cfg), seeds, label, args.split, args.variant)
     print(format_summary(res))
     if args.out:
@@ -187,6 +189,8 @@ def cmd_compare(args):
     print(format_summary(a)); print(); print(format_summary(b)); print()
     print(f"Paired comparison  A={a['label']}  minus  B={b['label']}  (same {len(a['seeds'])} seeds)")
     for m in METRICS:
+        if m not in a["metrics"] or m not in b["metrics"]:
+            continue
         if any(np.isnan(a["metrics"][m])) or any(np.isnan(b["metrics"][m])):
             continue
         r = paired_compare(a, b, m)
@@ -207,7 +211,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run")
-    r.add_argument("--policy", choices=["greedy", "random", "mappo"], required=True)
+    r.add_argument("--policy", choices=["greedy", "random", "mappo", "hmappo", "scripted"], required=True)
     r.add_argument("--checkpoint", type=str, default=None)
     r.add_argument("--stochastic", action="store_true", help="sample actions instead of argmax (mappo)")
     r.add_argument("--stage", type=int, default=4)
@@ -220,8 +224,8 @@ def main():
     c = sub.add_parser("compare"); c.add_argument("a"); c.add_argument("b")
     pl = sub.add_parser("plan"); pl.add_argument("pilot"); pl.add_argument("--halfwidth", type=float, default=2.0)
     args = p.parse_args()
-    if args.cmd == "run" and args.policy == "mappo" and not args.checkpoint:
-        p.error("--checkpoint is required for --policy mappo")
+    if args.cmd == "run" and args.policy in ("mappo", "hmappo") and not args.checkpoint:
+        p.error("--checkpoint is required for --policy mappo / hmappo")
     {"run": cmd_run, "compare": cmd_compare, "plan": cmd_plan}[args.cmd](args)
 
 

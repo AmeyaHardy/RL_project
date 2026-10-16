@@ -1,0 +1,2 @@
+update,env_steps,fps,train_return,train_deliveries,val_return,val_lo,val_hi,entropy,kl,clipfrac,value_loss,explained_var,epochs_run,shape_scale,n_decisions
+1,128,84.02670657095022,nan,nan,28.5966796875,19.878125,37.315234374999996,2.7862064242362976,0.004519518814049661,0.07899305643513799,0.3504829378798604,-0.06351268291473389,4,1.0,35
