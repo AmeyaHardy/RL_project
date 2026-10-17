@@ -129,13 +129,14 @@ def compute_gae(rew, val, done, last_val, gamma, lam):
 
 class HMAPPO:
     def __init__(self, env_cfg_dict: dict, ppo: HPPOConfig, rcfg: RewardConfig, seed: int = 0,
-                 device: str = "cpu", map_pool: Optional[int] = None):
+                 device: str = "cpu", map_pool: Optional[int] = None, memory: bool = True):
         torch.manual_seed(seed)
+        self.memory = memory
         self.rng = np.random.default_rng(seed)
         self.cfg_dict, self.ppo, self.rcfg, self.device = env_cfg_dict, ppo, rcfg, torch.device(device)
         cfg = cfg_from_dict(env_cfg_dict)
         self.N, self.E = cfg.n_agents, ppo.n_envs
-        self.envs = [HEnv(env_cfg_dict, r, seed, rcfg, map_pool) for r in range(self.E)]
+        self.envs = [HEnv(env_cfg_dict, r, seed, rcfg, map_pool, memory) for r in range(self.E)]
         for h in self.envs:
             h.reset()
         self.net_cfg = dict(hidden=ppo.hidden)
@@ -252,16 +253,17 @@ class HMAPPO:
     def state_dict(self) -> dict:
         return dict(actor=self.actor.state_dict(), critic=self.critic.state_dict(), net=self.net_cfg,
                     env_cfg=self.cfg_dict, ppo=self.ppo.__dict__, rcfg=self.rcfg.__dict__,
-                    vnorm=(self.vnorm.mean, self.vnorm.var, self.vnorm.count), env_steps=self.env_steps)
+                    vnorm=(self.vnorm.mean, self.vnorm.var, self.vnorm.count), env_steps=self.env_steps,
+                    memory=self.memory)
 
 
 # ======================================================================== evaluation-time policy
 class HMappoPolicy:
     """evaluate.py-compatible: policy.reset(seed); policy.act(obs, infos) -> {agent: action}."""
 
-    def __init__(self, actor: HActor, cfg, deterministic: bool = True, device: str = "cpu"):
+    def __init__(self, actor: HActor, cfg, deterministic: bool = True, device: str = "cpu", memory: bool = True):
         self.actor, self.cfg, self.det, self.device = actor.to(device).eval(), cfg, deterministic, torch.device(device)
-        self.pl = HPlanner(cfg)
+        self.pl = HPlanner(cfg, memory=memory)
         self.gen = torch.Generator().manual_seed(0)
 
     @classmethod
@@ -269,7 +271,7 @@ class HMappoPolicy:
         ck = torch.load(path, map_location=device, weights_only=False)
         actor = HActor(**ck["net"])
         actor.load_state_dict(ck["actor"])
-        return cls(actor, cfg or cfg_from_dict(ck["env_cfg"]), deterministic, device)
+        return cls(actor, cfg or cfg_from_dict(ck["env_cfg"]), deterministic, device, ck.get("memory", True))
 
     def reset(self, seed: int):
         self.pl.reset(int(seed))

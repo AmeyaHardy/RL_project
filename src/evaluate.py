@@ -1,3 +1,23 @@
+"""
+Evaluation protocol for SwarmSearchEnv.
+
+Principles
+  * Fixed, disjoint seed splits (train / val / test) -> no map is ever shared between them.
+  * Every policy is run on the SAME seeds, so comparisons are paired (map-to-map variance cancels).
+  * Report bootstrap 95% confidence intervals, never just a mean.
+  * Stress variants (dense / rushed / ...) test generalisation beyond the training distribution.
+
+Policy interface (anything with these two methods works):
+    policy.reset(seed: int)
+    policy.act(obs: dict, infos: dict) -> {agent: action}
+
+Usage
+  python evaluate.py run --policy greedy --info-mode shared --split val --episodes 50 --out res/greedy.json
+  python evaluate.py run --policy random --stage 1 --split val --out res/random.json
+  python evaluate.py run --policy mappo  --checkpoint runs/s1/best.pt --split val --out res/mappo.json
+  python evaluate.py compare res/mappo.json res/greedy.json
+  python evaluate.py plan res/greedy.json --halfwidth 2.0        # how many episodes do I need?
+"""
 from __future__ import annotations
 
 import argparse
@@ -16,6 +36,8 @@ METRICS = ["return", "value", "deliveries", "persist_delivered", "temp_delivered
            "coverage", "mean_carrying", "overlap"]      # last three: coordination diagnostics
 PRIMARY = "return"
 
+
+# ----------------------------------------------------------------------- policies
 class GreedyAdapter:
     def __init__(self, env: SwarmSearchEnv, **kw):
         self.env, self.kw, self.pol = env, kw, None
@@ -40,6 +62,8 @@ class RandomAdapter:
     def act(self, obs, infos):
         return {a: int(self.rng.choice(np.flatnonzero(infos[a]["action_mask"]))) for a in obs}
 
+
+# ----------------------------------------------------------------------- running
 def episode_metrics(env: SwarmSearchEnv) -> Dict[str, float]:
     s = env.stats
     dbt, ebt = s["delivered_by_type"], s["expired_by_type"]
@@ -103,6 +127,7 @@ def evaluate_policy(cfg: EnvConfig, make_policy: Callable[[SwarmSearchEnv], obje
             "env_cfg": cfg_to_dict(cfg), "metrics": metrics, "summary": summarize(metrics)}
 
 
+# ----------------------------------------------------------------------- statistics
 def bootstrap_ci(x: Sequence[float], n_boot: int = 5000, alpha: float = 0.05, seed: int = 0):
     x = np.asarray(x, dtype=float)
     x = x[~np.isnan(x)]
@@ -148,14 +173,17 @@ def format_summary(res: dict) -> str:
         lines.append(f"  {k:18s} {s['mean']:8.2f}   95% CI [{s['ci_lo']:8.2f}, {s['ci_hi']:8.2f}]   std {s['std']:6.2f}")
     return "\n".join(lines)
 
+
+# ----------------------------------------------------------------------- CLI
 def build_policy_factory(args, ckpt_cfg: Optional[dict]):
     if args.policy == "greedy":
-        return lambda env: GreedyAdapter(env)
+        kw = dict(window_memory=True) if args.greedy_memory else {}
+        return lambda env: GreedyAdapter(env, **kw)
     if args.policy == "random":
         return lambda env: RandomAdapter(env)
     if args.policy == "scripted":                    # hand-written goal chooser + the same executor (no torch)
         from hier import ScriptedHierPolicy
-        return lambda env: ScriptedHierPolicy(env)
+        return lambda env: ScriptedHierPolicy(env, memory=not args.no_memory)
     if args.policy == "hmappo":
         from hmappo import HMappoPolicy
         return lambda env: HMappoPolicy.from_checkpoint(args.checkpoint, env.cfg, deterministic=not args.stochastic)
@@ -219,6 +247,8 @@ def main():
     r.add_argument("--split", choices=["val", "test"], default="val")
     r.add_argument("--episodes", type=int, default=None)
     r.add_argument("--variant", choices=list(VARIANTS), default="default")
+    r.add_argument("--greedy-memory", action="store_true", help="greedy with policy-side memory (window mode reference)")
+    r.add_argument("--no-memory", action="store_true", help="scripted planner without memory (window ablation)")
     r.add_argument("--label", type=str, default=None)
     r.add_argument("--out", type=str, default=None)
     c = sub.add_parser("compare"); c.add_argument("a"); c.add_argument("b")
