@@ -1,7 +1,7 @@
 {
  "args": {
-  "stage": 4,
-  "total_steps": 1500000,
+  "stage": 2,
+  "total_steps": 300000,
   "n_envs": 8,
   "rollout": 512,
   "epochs": 4,
@@ -23,13 +23,14 @@
   "eval_every": 5,
   "eval_episodes": 20,
   "eval_stochastic": false,
-  "ref": "greedy_s4.json",
-  "init_actor_from": "runs/h2_window/best.pt",
+  "ref": null,
+  "init_actor_from": null,
   "seed": 0,
   "device": "cpu",
-  "out": "runs/h4_window",
+  "out": "runs/hw2",
   "selftest": false,
-  "info_mode": "window"
+  "info_mode": "window",
+  "no_memory": false
  },
  "ppo": {
   "n_envs": 8,
@@ -63,9 +64,9 @@
   "gamma": 0.995
  },
  "env_cfg": {
-  "height": 20,
-  "width": 20,
-  "n_agents": 4,
+  "height": 12,
+  "width": 12,
+  "n_agents": 1,
   "obstacle_density": [
    0.1,
    0.25
@@ -77,8 +78,8 @@
   "checkpoint_stacking": true,
   "checkpoint_service_rate": null,
   "service_priority": "urgency",
-  "n_persistent": 10,
-  "n_malicious": 3,
+  "n_persistent": 6,
+  "n_malicious": 0,
   "n_temp_initial": 0,
   "temp_spawn_prob": 0.04,
   "persist_spawn_prob": 0.0,
@@ -97,7 +98,7 @@
   "claim_blocks_pickup": false,
   "slack_uses_true_path": false,
   "info_mode": "window",
-  "max_steps": 300,
+  "max_steps": 150,
   "target_deliveries": null,
   "v_low": 1.0,
   "v_high": 5.0,

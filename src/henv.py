@@ -14,12 +14,12 @@ from stages import TRAIN_SEED_BASE, cfg_from_dict
 
 class HEnv:
     def __init__(self, cfg_dict: dict, rank: int, base_seed: int, rcfg: RewardConfig,
-                 map_pool: Optional[int] = None):
+                 map_pool: Optional[int] = None, memory: bool = True):
         self.cfg = cfg_from_dict(cfg_dict)
         self.env = SwarmSearchEnv(self.cfg)
         self.N = self.cfg.n_agents
         self.rng = np.random.default_rng(base_seed * 1009 + rank)
-        self.pl = HPlanner(self.cfg, seed=base_seed * 7 + rank)
+        self.pl = HPlanner(self.cfg, seed=base_seed * 7 + rank, memory=memory)
         self.shaper = RewardShaper(rcfg, self.N, self.cfg.height, self.cfg.width, self.cfg.view_radius,
                                    self.cfg.v_high)
         self.map_pool = map_pool

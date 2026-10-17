@@ -4,6 +4,7 @@ Train hierarchical MAPPO (goal-level policy + BFS executor + team/individual/coo
   python train_h.py --selftest                                   # 1-2 minutes: shapes, one PPO update, eval hook
   python train_h.py --stage 2 --total-steps 300000 --out runs/h2
   python train_h.py --stage 4 --total-steps 1000000 --init-actor-from runs/h2/best.pt --out runs/h4 --ref greedy_s4.json
+  python train_h.py --stage 4 --info-mode window --total-steps 1000000 --out runs/hw4 --ref res/greedy_window_mem.json
 
 Evaluate:
   python evaluate.py run --policy hmappo --checkpoint runs/h4/best.pt --split val --episodes 50 --out res/h4.json
@@ -56,9 +57,9 @@ def main():
     p.add_argument("--device", default="cpu")
     p.add_argument("--out", type=str, default="runs/h")
     p.add_argument("--selftest", action="store_true")
-    p.add_argument("--info-mode", choices=["shared", "private", "window"], default="shared")
+    p.add_argument("--info-mode", choices=["shared", "window"], default="shared")
+    p.add_argument("--no-memory", action="store_true", help="window mode: strictly memoryless planner (ablation)")
     a = p.parse_args()
-
     if a.selftest:
         a.stage, a.n_envs, a.rollout, a.total_steps, a.eval_every, a.eval_episodes = 3, 2, 64, 128, 1, 2
         a.out = "runs/_selftest"
@@ -73,7 +74,8 @@ def main():
     with open(os.path.join(a.out, "config.json"), "w") as f:
         json.dump({"args": vars(a), "ppo": ppo.__dict__, "reward": rcfg.__dict__, "env_cfg": cfg_to_dict(cfg)}, f, indent=1)
 
-    algo = HMAPPO(cfg_to_dict(cfg), ppo, rcfg, seed=a.seed, device=a.device, map_pool=a.map_pool)
+    algo = HMAPPO(cfg_to_dict(cfg), ppo, rcfg, seed=a.seed, device=a.device, map_pool=a.map_pool,
+                 memory=not a.no_memory)
     if a.init_actor_from:
         ck = torch.load(a.init_actor_from, map_location=a.device, weights_only=False)
         algo.actor.load_state_dict(ck["actor"])
@@ -115,7 +117,7 @@ def main():
                f"| ent {st['ent']:.2f} kl {st['kl']:.3f} ev {st['explained_var']:.2f} dec {st['n_decisions']} shape {scale:.2f}")
         if u % a.eval_every == 0 or u == n_updates:
             algo.actor.eval()
-            res = evaluate_policy(cfg, lambda env: HMappoPolicy(algo.actor, env.cfg, not a.eval_stochastic, a.device),
+            res = evaluate_policy(cfg, lambda env: HMappoPolicy(algo.actor, env.cfg, not a.eval_stochastic, a.device, not a.no_memory),
                                   val_seeds, "hmappo", "val", verbose=False)
             algo.actor.train()
             s = res["summary"]["return"]

@@ -1,3 +1,22 @@
+"""
+Hierarchical interface for SwarmSearchEnv  (info_mode "shared" or "window").
+
+    high level  (learned, or scripted for testing) : picks a GOAL among   {stay} U {items} U {regions}
+    low level   (deterministic, in this file)      : BFS path following with priority planning + yielding
+
+Everything is computed from the observation dicts plus policy-side memory built ONLY from past observations
+(cells/obstacles seen, items seen with their absolute expiry time, when each cell was last seen).
+
+  shared mode : the env already accumulates the map / items, the observation is used as is.
+  window mode : the observation only contains what the robots' windows cover RIGHT NOW, so the planner keeps
+                that memory itself (memory=True).  memory=False is a strict memoryless ablation: it plans only
+                over what is currently inside the windows (much weaker; use it to measure what memory is worth).  Claims ("robot j is going for item p") live in a blackboard
+inside the planner, which is the same communication assumption as greedy_baseline.GreedyPolicy.targets.
+
+Why this exists (see README_reward.md): the flat MAPPO has to *learn shortest-path planning* through a
+random obstacle maze from a 7x7 window + a 6x6 max-pooled map.  Here navigation is solved, and RL is spent
+on the part where it can actually beat a heuristic: WHO goes for WHICH item / region.
+"""
 from __future__ import annotations
 
 from collections import deque
@@ -22,8 +41,9 @@ def critic_dim(n_agents: int) -> int:
 
 
 class HPlanner:
-    def __init__(self, cfg: EnvConfig, seed: int = 0):
-        assert cfg.info_mode == "window", "HPlanner supports info_mode='shared'"
+    def __init__(self, cfg: EnvConfig, seed: int = 0, memory: bool = True):
+        assert cfg.info_mode in ("shared", "window"), "HPlanner supports info_mode 'shared' or 'window'"
+        self.memory = memory
         self.cfg, self.N = cfg, cfg.n_agents
         self.H, self.W = cfg.height, cfg.width
         self.D = float(self.H + self.W)
@@ -33,12 +53,16 @@ class HPlanner:
         self.names: List[str] = []
         self.reset(seed)
 
+    # ------------------------------------------------------------------ state
     def reset(self, seed: Optional[int] = None):
         if seed is not None:
             self.rng = np.random.default_rng(seed)
         N = self.N
         self.t, self._t_seen = 0, -1
         self.last_seen = np.full((self.H, self.W), -1e9, np.float32)
+        self.known = np.zeros((self.H, self.W), bool)          # policy-side map memory (window mode)
+        self.obst = np.zeros((self.H, self.W), bool)
+        self.item_mem: Dict[tuple, Tuple[int, int]] = {}       # pos -> (type, absolute expiry step)
         self.goal: List[Optional[tuple]] = [None] * N          # ("item", pos) | ("region", cell) | ("stay", until)
         self.goal_t = [0] * N
         self.claims: Dict[tuple, int] = {}
@@ -50,6 +74,7 @@ class HPlanner:
         self.new_item = False
         self._cache: dict = {}
 
+    # ------------------------------------------------------------------ perception
     def perceive(self, obs: Dict[str, dict]):
         c, H, W = self.cfg, self.H, self.W
         self.names = list(obs.keys())
@@ -69,16 +94,31 @@ class HPlanner:
         self.depot = (int(np.clip(round(y0 + float(sc[0, 6]) * H), 0, H - 1)),
                       int(np.clip(round(x0 + float(sc[0, 7]) * W), 0, W - 1)))
         self.deliv_frac = float(sc[0, 5])
-        self.known = team[0] > 0.5
-        self.obst = team[1] > 0.5
+        vis, vis_obst = team[0] > 0.5, team[1] > 0.5
+        window = c.info_mode == "window"
+        # items visible in this observation (malicious are ignored: never picked); temp expiry is absolute
+        seen: Dict[tuple, Tuple[int, int]] = {}
+        for y, x in np.argwhere(team[2] > 0.5):
+            seen[(int(y), int(x))] = (0, 10 ** 9)
+        for y, x in np.argwhere(team[3] > 0):
+            seen[(int(y), int(x))] = (1, int(round(t + float(team[3][y, x]) * self.life_max)))
+        if window and self.memory:
+            self.known |= vis
+            self.obst |= vis_obst
+            for p in [p for p in self.item_mem if vis[p] and p not in seen]:
+                del self.item_mem[p]                      # cell is in view and empty: picked or expired
+            self.item_mem.update(seen)
+            for p in [p for p, (ty, ex) in self.item_mem.items() if ty == 1 and ex <= t]:
+                del self.item_mem[p]                      # remembered temp item reached its deadline
+        else:                                              # shared mode (env accumulates) or memoryless ablation
+            self.known, self.obst, self.item_mem = vis, vis_obst, seen
         self.free = self.known & ~self.obst
         self.free[self.depot] = True
-        self.items: Dict[tuple, Tuple[int, float]] = {}
-        for y, x in np.argwhere(team[2] > 0.5):
-            self.items[(int(y), int(x))] = (0, 1e9)
-        for y, x in np.argwhere(team[3] > 0):
-            self.items[(int(y), int(x))] = (1, float(team[3][y, x]) * self.life_max)
+        self.items: Dict[tuple, Tuple[int, float]] = {
+            p: (ty, 1e9 if ty == 0 else float(ex - t)) for p, (ty, ex) in self.item_mem.items()}
         r = c.view_radius
+        if window and not self.memory:
+            self.last_seen[:] = -1e9
         for (y, x) in self.pos:
             self.last_seen[max(0, y - r):y + r + 1, max(0, x - r):x + r + 1] = t
         cur = set(self.items)
@@ -94,6 +134,7 @@ class HPlanner:
             if self.carrying[i]:
                 self._release(i)
 
+    # ------------------------------------------------------------------ graph helpers
     def _bfs(self, src: tuple, extra_block=None, stop: Optional[tuple] = None):
         """Distance dict-free BFS over known free cells. Returns (dist [H,W] int, first_step dict or None)."""
         H, W, free = self.H, self.W, self.free
@@ -124,6 +165,7 @@ class HPlanner:
             self._cache[key] = self._bfs(src)[0]
         return self._cache[key]
 
+    # ------------------------------------------------------------------ goals / claims
     def _release(self, i: int):
         g = self.goal[i]
         if g is not None and g[0] == "item" and self.claims.get(g[1]) == i:
@@ -176,6 +218,7 @@ class HPlanner:
         else:
             self.goal[i] = ("region", cand["reg_cell"][k - 1 - KI])
 
+    # ------------------------------------------------------------------ candidates (features for the learned chooser)
     def _stale_gain(self) -> np.ndarray:
         if "G" not in self._cache:
             r = self.cfg.view_radius
@@ -245,6 +288,7 @@ class HPlanner:
             imask[k] = True
             ipos.append(p)
 
+        # ---- regions
         G, age = self._stale_gain(), self._cache["age"]
         score = np.where((d_me >= 0), G - 0.003 * d_me, -1e9)
         regs = np.zeros((KR, FR), np.float32)
@@ -307,6 +351,7 @@ class HPlanner:
         extra = [min(n_p / 10.0, 1.0), min(n_t / 5.0, 1.0), len(self.claims) / N, float(md)]
         return np.concatenate([self.ctx(i), np.asarray(blocks + extra, np.float32)]).astype(np.float32)
 
+    # ------------------------------------------------------------------ low-level control
     def actions(self) -> Dict[str, int]:
         c, N = self.cfg, self.N
         acts = [STAY] * N
@@ -364,6 +409,7 @@ class HPlanner:
                 _, first = self._bfs(p, extra_block=block, stop=tgt[i])
                 a = first.get(tgt[i], STAY)
                 d = p if a == STAY else (p[0] + MOVES[a][0], p[1] + MOVES[a][1])
+                # if we walk into a lower-priority robot, ask it to get out of the way
                 for j in range(N):
                     if j != i and self.pos[j] == d and rank[j] > rank[i] and j not in fixed and d != self.depot:
                         yield_req.add(j)
@@ -385,6 +431,8 @@ class HPlanner:
                 best, best_score = (a, q), s
         return best
 
+
+# ---------------------------------------------------------------------- scripted chooser (testing / reference)
 def scripted_choice(cand: dict, D: float, vh: float = 5.0) -> int:
     """Hand-written goal selector over the same candidates the network sees (used to validate the pipeline)."""
     best, best_s = 0, 0.0
@@ -408,8 +456,8 @@ def scripted_choice(cand: dict, D: float, vh: float = 5.0) -> int:
 class ScriptedHierPolicy:
     """evaluate.py-compatible policy: scripted goal chooser + HPlanner executor."""
 
-    def __init__(self, env):
-        self.env, self.pl = env, HPlanner(env.cfg)
+    def __init__(self, env, memory: bool = True):
+        self.env, self.pl = env, HPlanner(env.cfg, memory=memory)
 
     def reset(self, seed: int):
         self.pl.reset(seed)
