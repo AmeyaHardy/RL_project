@@ -60,7 +60,7 @@ class Item:
 class EnvConfig:
     height: int = 20
     width: int = 20
-    n_agents: int = 4
+    n_agents: int = 5
     obstacle_density: tuple = (0.10, 0.25)
     min_free_frac: float = 0.55
     view_radius: int = 3

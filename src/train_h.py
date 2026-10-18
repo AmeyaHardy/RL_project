@@ -16,7 +16,7 @@ from stages import cfg_to_dict, make_env_config, split_seeds
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--stage", type=int, default=4, choices=[1, 2, 3, 4])
+    p.add_argument("--stage", type=int, default=4, choices=[1, 2, 3, 4, 5])
     p.add_argument("--total-steps", type=int, default=1_000_000, help="env steps summed over envs")
     p.add_argument("--n-envs", type=int, default=8)
     p.add_argument("--rollout", type=int, default=512)

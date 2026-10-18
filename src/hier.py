@@ -9,7 +9,7 @@ import numpy as np
 from env import DOWN, DROP, LEFT, PICK, RIGHT, STAY, UP, EnvConfig, HANDLING_TIME
 
 MOVES = {UP: (-1, 0), DOWN: (1, 0), LEFT: (0, -1), RIGHT: (0, 1)}
-KI, KR = 10, 16                  # max item / region candidates
+KI, KR = 20, 20                  # max item / region candidates
 FI, FR, FC = 9, 9, 14            # feature sizes (item, region, context)
 N_CAND = 1 + KI + KR
 AGENT_BLOCK = 7
