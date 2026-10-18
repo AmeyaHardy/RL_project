@@ -15,7 +15,10 @@ STAGES = {
             n_temp_initial=0, temp_spawn_prob=0.04, max_steps=150),         # + expiring items
     3: dict(height=16, width=16, n_agents=2, n_persistent=8, n_malicious=2,
             temp_spawn_prob=0.04, max_steps=200),                           # + 2 robots, malicious
-    4: dict(),                                                               # full problem
+    4: dict(),
+    5: dict(height=30, width=30, n_agents=5, n_persistent=20, n_malicious=5,
+            n_temp_initial=3, temp_spawn_prob=0.08, max_persist_active=50,
+            max_temp_active=10, max_steps=400),                                                               # full problem
 }
 
 # Stress variants for generalisation tests (applied on top of the trained config).

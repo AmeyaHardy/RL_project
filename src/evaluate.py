@@ -17,8 +17,6 @@ METRICS = ["return", "value", "deliveries", "persist_delivered", "temp_delivered
            "coverage", "mean_carrying", "overlap"]      # last three: coordination diagnostics
 PRIMARY = "return"
 
-
-# ----------------------------------------------------------------------- policies
 class GreedyAdapter:
     def __init__(self, env: SwarmSearchEnv, **kw):
         self.env, self.kw, self.pol = env, kw, None
