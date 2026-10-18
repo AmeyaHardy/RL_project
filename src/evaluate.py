@@ -1,23 +1,4 @@
-"""
-Evaluation protocol for SwarmSearchEnv.
-
-Principles
-  * Fixed, disjoint seed splits (train / val / test) -> no map is ever shared between them.
-  * Every policy is run on the SAME seeds, so comparisons are paired (map-to-map variance cancels).
-  * Report bootstrap 95% confidence intervals, never just a mean.
-  * Stress variants (dense / rushed / ...) test generalisation beyond the training distribution.
-
-Policy interface (anything with these two methods works):
-    policy.reset(seed: int)
-    policy.act(obs: dict, infos: dict) -> {agent: action}
-
-Usage
-  python evaluate.py run --policy greedy --info-mode shared --split val --episodes 50 --out res/greedy.json
-  python evaluate.py run --policy random --stage 1 --split val --out res/random.json
-  python evaluate.py run --policy mappo  --checkpoint runs/s1/best.pt --split val --out res/mappo.json
-  python evaluate.py compare res/mappo.json res/greedy.json
-  python evaluate.py plan res/greedy.json --halfwidth 2.0        # how many episodes do I need?
-"""
+"""Evaluation protocol for SwarmSearchEnv policies with bootstrap confidence intervals and paired comparisons."""
 from __future__ import annotations
 
 import argparse
@@ -184,6 +165,9 @@ def build_policy_factory(args, ckpt_cfg: Optional[dict]):
     if args.policy == "scripted":                    # hand-written goal chooser + the same executor (no torch)
         from hier import ScriptedHierPolicy
         return lambda env: ScriptedHierPolicy(env, memory=not args.no_memory)
+    if args.policy in ("random_goal", "nearest_goal"):   # same planner+executor, non-learned goal chooser
+        from hier import ChooserHierPolicy
+        return lambda env: ChooserHierPolicy(env, args.policy.split("_")[0], memory=not args.no_memory)
     if args.policy == "hmappo":
         from hmappo import HMappoPolicy
         return lambda env: HMappoPolicy.from_checkpoint(args.checkpoint, env.cfg, deterministic=not args.stochastic)
@@ -239,7 +223,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run")
-    r.add_argument("--policy", choices=["greedy", "random", "mappo", "hmappo", "scripted"], required=True)
+    r.add_argument("--policy", choices=["greedy", "random", "mappo", "hmappo", "scripted", "random_goal", "nearest_goal"], required=True)
     r.add_argument("--checkpoint", type=str, default=None)
     r.add_argument("--stochastic", action="store_true", help="sample actions instead of argmax (mappo)")
     r.add_argument("--stage", type=int, default=4)

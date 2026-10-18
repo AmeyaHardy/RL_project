@@ -1,13 +1,4 @@
-"""
-Curriculum stages, evaluation stress-variants and seed splits.  No torch dependency.
-
-Seed splits (maps are fully determined by the episode seed, so disjoint seed ranges
-mean disjoint maps):
-
-    train  : seeds >= 100_000   (drawn at random during training)
-    val    : seeds 10_000 ...   (model selection / monitoring; fine to look at often)
-    test   : seeds 20_000 ...   (final report only; do not tune on it)
-"""
+"""Curriculum stages, environment stress variants, and disjoint seed splits (train/val/test)."""
 from dataclasses import asdict, fields
 from typing import Optional
 

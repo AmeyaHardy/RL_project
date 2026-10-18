@@ -1,13 +1,4 @@
-"""
-MAPPO (multi-agent PPO, centralized training / decentralized execution) for SwarmSearchEnv.
-
-  * Shared decentralised Actor: uses local 7x7 window, team map + reconstructed checkpoint +
-    separated self/teammate channels, scalar features, and action-mask sanitization.
-  * Spatial Agent-Conditioned Centralised Critic V(s, o_i): 2D CNN over the 7 ground-truth state
-    grids + global state scalars + per-agent scalar observations -> per-agent value [E, N].
-  * Per-agent credit assignment & potential-based BFS reward shaping in EnvRunner.
-  * Compatible with all unit tests in test_mappo.py and cross-stage transfer in train.py.
-"""
+"""Multi-Agent PPO (MAPPO) with centralized critic and decentralized actor for SwarmSearchEnv."""
 from __future__ import annotations
 
 import multiprocessing as mp
@@ -224,9 +215,7 @@ class Actor(nn.Module):
             _init(nn.Conv2d(32, 32, 3, padding=1)), nn.ReLU(), nn.Flatten(),
             _init(nn.Linear(32 * view_k * view_k, hidden)), nn.ReLU()
         )
-        # team map (7) + [self-pos (1)] + [checkpoint (1)] + [y, x coords (2)] = 11 channels
-        # AdaptiveMaxPool2d(6) preserves sharp point features (items/depot) AND keeps shape
-        # identical across 12x12, 16x16, and 20x20 stages for 100% weight transfer!
+        # 11 input channels: team map (7) + self-pos (1) + checkpoint (1) + coords (2).
         self.team = nn.Sequential(
             _init(nn.Conv2d(N_TEAM_CH + 4, 32, 3, padding=1)), nn.ReLU(),
             _init(nn.Conv2d(32, 64, 3, padding=1)), nn.ReLU(),

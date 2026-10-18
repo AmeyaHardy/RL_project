@@ -1,3 +1,4 @@
+"""SwarmSearchEnv: Multi-agent cooperative search, pickup, and delivery PettingZoo environment."""
 from __future__ import annotations
 
 import copy

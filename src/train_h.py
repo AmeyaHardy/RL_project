@@ -1,14 +1,4 @@
-"""
-Train hierarchical MAPPO (goal-level policy + BFS executor + team/individual/coordination reward).
-
-  python train_h.py --selftest                                   # 1-2 minutes: shapes, one PPO update, eval hook
-  python train_h.py --stage 2 --total-steps 300000 --out runs/h2
-  python train_h.py --stage 4 --total-steps 1000000 --init-actor-from runs/h2/best.pt --out runs/h4 --ref greedy_s4.json
-  python train_h.py --stage 4 --info-mode window --total-steps 1000000 --out runs/hw4 --ref res/greedy_window_mem.json
-
-Evaluate:
-  python evaluate.py run --policy hmappo --checkpoint runs/h4/best.pt --split val --episodes 50 --out res/h4.json
-"""
+"""Training pipeline for Hierarchical MAPPO (H-MAPPO) on SwarmSearchEnv."""
 import argparse
 import csv
 import json

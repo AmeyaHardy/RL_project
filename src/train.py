@@ -1,14 +1,4 @@
-"""
-Train MAPPO on SwarmSearchEnv.
-
-  # 1. Verify unit tests first:
-  python -m unittest test_mappo -v
-
-  # 2. Stage 1 -> Stage 2 -> Stage 4 curriculum:
-  python train.py --stage 1 --info-mode shared --total-steps 500000 --n-envs 8 --workers 4 --out runs/s1
-  python train.py --stage 2 --info-mode shared --total-steps 800000 --n-envs 8 --workers 4 --init-actor-from runs/s1/best.pt --out runs/s2
-  python train.py --stage 4 --info-mode shared --total-steps 2000000 --n-envs 8 --workers 4 --init-actor-from runs/s2/best.pt --out runs/s4
-"""
+"""Training pipeline for MAPPO on SwarmSearchEnv curriculum stages."""
 import argparse
 import csv
 import json
