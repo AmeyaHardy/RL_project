@@ -1,16 +1,4 @@
-"""
-Hierarchical MAPPO (goal-level) for SwarmSearchEnv.
-
-  Actor  : permutation-equivariant pointer network over candidate goals {stay, items(<=10), regions(<=16)};
-           one self-attention layer lets every candidate see the others (relative comparisons), parameters
-           are independent of map size / #robots -> curriculum transfer is 100%.
-  Critic : centralised V(s, i) on compact global features (all robots' goals/carry state, claims, coverage...).
-  Action : robots decide SEQUENTIALLY in a random order each time they need a goal; each robot's candidate
-           features include the earlier robots' claims -> duplicate targets are impossible, and the joint
-           log-prob factorises as the product of the per-robot log-probs that PPO already uses.
-  PPO    : per-step reward + GAE over all env steps; the actor loss is taken only on decision steps
-           (between decisions the low-level executor acts, the policy gradient there is zero).
-"""
+"""Hierarchical MAPPO: attention-based goal selection over candidate items and regions."""
 from __future__ import annotations
 
 from collections import deque

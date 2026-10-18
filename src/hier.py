@@ -1,22 +1,4 @@
-"""
-Hierarchical interface for SwarmSearchEnv  (info_mode "shared" or "window").
-
-    high level  (learned, or scripted for testing) : picks a GOAL among   {stay} U {items} U {regions}
-    low level   (deterministic, in this file)      : BFS path following with priority planning + yielding
-
-Everything is computed from the observation dicts plus policy-side memory built ONLY from past observations
-(cells/obstacles seen, items seen with their absolute expiry time, when each cell was last seen).
-
-  shared mode : the env already accumulates the map / items, the observation is used as is.
-  window mode : the observation only contains what the robots' windows cover RIGHT NOW, so the planner keeps
-                that memory itself (memory=True).  memory=False is a strict memoryless ablation: it plans only
-                over what is currently inside the windows (much weaker; use it to measure what memory is worth).  Claims ("robot j is going for item p") live in a blackboard
-inside the planner, which is the same communication assumption as greedy_baseline.GreedyPolicy.targets.
-
-Why this exists (see README_reward.md): the flat MAPPO has to *learn shortest-path planning* through a
-random obstacle maze from a 7x7 window + a 6x6 max-pooled map.  Here navigation is solved, and RL is spent
-on the part where it can actually beat a heuristic: WHO goes for WHICH item / region.
-"""
+"""Hierarchical interface: high-level goal selection with low-level deterministic BFS executor and yielding."""
 from __future__ import annotations
 
 from collections import deque
@@ -70,6 +52,8 @@ class HPlanner:
         self.last_act = [STAY] * N
         self.last_pos: List[Optional[tuple]] = [None] * N
         self.blocked = [0] * N
+        self.stall = [0] * N                                   # consecutive steps a carrier made no progress
+        self.retreat = [-1] * N                                # carrier backs out of a jam until this step
         self.prev_items: set = set()
         self.new_item = False
         self._cache: dict = {}
@@ -130,6 +114,7 @@ class HPlanner:
         for i in range(self.N):
             lp, la = self.last_pos[i], self.last_act[i]
             self.blocked[i] = self.blocked[i] + 1 if (la in MOVES and lp == self.pos[i]) else 0
+            self.stall[i] = self.stall[i] + 1 if (self.carrying[i] and lp == self.pos[i] and self.pos[i] != self.depot) else 0
             self.last_pos[i] = self.pos[i]
             if self.carrying[i]:
                 self._release(i)
@@ -376,7 +361,15 @@ class HPlanner:
             if g is not None and g[0] in ("item", "region"):
                 tgt[i] = g[1]
 
+        # Temporarily back out carriers stalled for >= 4 steps to resolve corridor jams.
+        for i in range(N):
+            if self.carrying[i] and self.stall[i] >= 4 and self.t >= self.retreat[i]:
+                self.retreat[i], self.stall[i] = self.t + 6, 0
+        retreating = {i for i in range(N) if self.carrying[i] and self.t < self.retreat[i] and i not in fixed}
+
         def prio(i):
+            if i in retreating:
+                return (4, 0, i)
             kind = 0 if self.carrying[i] else (1 if (self.goal[i] and self.goal[i][0] == "item") else
                                                  2 if (self.goal[i] and self.goal[i][0] == "region") else 3)
             d = d_dep[self.pos[i]] if self.carrying[i] else 0
@@ -391,7 +384,7 @@ class HPlanner:
                 continue
             p = self.pos[i]
             hard = {dest[k] for k in dest if k != i and dest[k] != self.depot}
-            if i in yield_req:
+            if i in yield_req or i in retreating:
                 a, d = self._sidestep(i, hard)
             elif tgt[i] is None or tgt[i] == p:
                 a, d = STAY, p
@@ -402,14 +395,13 @@ class HPlanner:
                         continue
                     if rank[j] < rank[i] or self.blocked[i] >= 1:
                         if self.pos[j] != self.depot:
-                            block.add(self.pos[j])       # unplanned higher-priority robot: obstacle
-                for k, dk in dest.items():                # forbid swaps with already planned movers
+                            block.add(self.pos[j])
+                for k, dk in dest.items():
                     if dk == p and self.pos[k] != p:
                         block.add(self.pos[k])
                 _, first = self._bfs(p, extra_block=block, stop=tgt[i])
                 a = first.get(tgt[i], STAY)
                 d = p if a == STAY else (p[0] + MOVES[a][0], p[1] + MOVES[a][1])
-                # if we walk into a lower-priority robot, ask it to get out of the way
                 for j in range(N):
                     if j != i and self.pos[j] == d and rank[j] > rank[i] and j not in fixed and d != self.depot:
                         yield_req.add(j)
@@ -426,15 +418,14 @@ class HPlanner:
             q = (p[0] + dy, p[1] + dx)
             if not (0 <= q[0] < self.H and 0 <= q[1] < self.W) or not self.free[q] or q in hard or q in occupied:
                 continue
-            s = float(dd[q]) + self.rng.random() * 0.1      # step away from the depot / chokepoint
+            s = float(dd[q]) + self.rng.random() * 0.1
             if s > best_score:
                 best, best_score = (a, q), s
         return best
 
 
-# ---------------------------------------------------------------------- scripted chooser (testing / reference)
 def scripted_choice(cand: dict, D: float, vh: float = 5.0) -> int:
-    """Hand-written goal selector over the same candidates the network sees (used to validate the pipeline)."""
+    """Heuristic goal selector over candidate items and regions."""
     best, best_s = 0, 0.0
     for k in range(KI):
         if cand["item_mask"][k]:
@@ -453,19 +444,53 @@ def scripted_choice(cand: dict, D: float, vh: float = 5.0) -> int:
     return best
 
 
-class ScriptedHierPolicy:
-    """evaluate.py-compatible policy: scripted goal chooser + HPlanner executor."""
+def random_choice(cand: dict, rng: np.random.Generator) -> int:
+    """Uniform selection over legal candidate items, regions, or stay."""
+    valid = [0] + [1 + k for k in range(KI) if cand["item_mask"][k]] + [1 + KI + k for k in range(KR) if cand["reg_mask"][k]]
+    return int(rng.choice(valid))
 
-    def __init__(self, env, memory: bool = True):
-        self.env, self.pl = env, HPlanner(env.cfg, memory=memory)
+
+def nearest_choice(cand: dict) -> int:
+    """Select nearest feasible item, falling back to nearest stale region."""
+    best, best_d = 0, 1e9
+    for k in range(KI):
+        if cand["item_mask"][k] and cand["items"][k][4] < best_d:
+            best, best_d = 1 + k, cand["items"][k][4]
+    if best == 0:
+        for k in range(KR):
+            if cand["reg_mask"][k] and cand["regs"][k][1] < best_d:
+                best, best_d = 1 + KI + k, cand["regs"][k][1]
+    return best
+
+
+class ChooserHierPolicy:
+    """Combines HPlanner low-level execution with a goal chooser ('scripted' | 'random' | 'nearest')."""
+
+    def __init__(self, env, kind: str = "scripted", memory: bool = True):
+        self.env, self.kind, self.pl = env, kind, HPlanner(env.cfg, memory=memory)
+        self.rng = np.random.default_rng(0)
 
     def reset(self, seed: int):
         self.pl.reset(seed)
+        self.rng = np.random.default_rng(seed + 12345)
 
-    def act(self, obs, infos):
+    def act(self, obs, infos=None):
         pl = self.pl
         pl.perceive(obs)
         for i in pl.need_decision():
             cand = pl.candidates(i)
-            pl.apply_choice(i, scripted_choice(cand, pl.D), cand)
+            if self.kind == "scripted":
+                k = scripted_choice(cand, pl.D)
+            elif self.kind == "random":
+                k = random_choice(cand, self.rng)
+            else:
+                k = nearest_choice(cand)
+            pl.apply_choice(i, k, cand)
         return pl.actions()
+
+
+class ScriptedHierPolicy(ChooserHierPolicy):
+    """Scripted goal chooser with HPlanner executor."""
+
+    def __init__(self, env, memory: bool = True):
+        super().__init__(env, kind="scripted", memory=memory)

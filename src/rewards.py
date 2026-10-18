@@ -1,3 +1,4 @@
+"""Training reward shaping: individual credit assignment, coordination bonuses, and BFS potentials."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -8,22 +9,22 @@ import numpy as np
 
 @dataclass
 class RewardConfig:
-    lam_ind: float = 0.3          # weight of the individual block
-    own_delivery: float = 0.3     # fraction of delivered value credited again to the deliverer
-    own_discover: float = 0.1     # bonus to the robot that FIRST sees a valuable item
-    own_cover: float = 0.1        # per novel cell (never seen before) / window area
-    own_collision: float = 0.05   # extra penalty to the robot that collided
-    w_stale_cov: float = 0.30     # team: stale-coverage gain
-    age_cap: float = 50.0         # ~ shortest temp lifetime: cells unseen longer than this count as "fully stale"
-    w_overlap: float = 0.02       # team: redundant-window penalty (free robots only)
-    w_sync: float = 0.25          # team: pickups of different robots within sync_window steps
-    sync_window: int = 8
-    psi: float = 0.30             # potential on carried value (policy-invariant)
-    gamma: float = 0.995
+    lam_ind: float = 0.3          # weight for individual reward block
+    own_delivery: float = 0.3     # fraction of delivered value credited to deliverer
+    own_discover: float = 0.1     # discovery bonus for first spotting valuable item
+    own_cover: float = 0.1        # novel coverage reward per cell normalized by window area
+    own_collision: float = 0.05   # collision penalty for individual agent
+    w_stale_cov: float = 0.30     # team reward weight for revisiting stale areas
+    age_cap: float = 50.0         # max staleness step cap
+    w_overlap: float = 0.02       # team penalty for redundant sensing among free agents
+    w_sync: float = 0.25          # team bonus for simultaneous agent pickups
+    sync_window: int = 8          # step window to qualify for sync pickup
+    psi: float = 0.30             # potential scale on carried value
+    gamma: float = 0.995          # discount factor for potential shaping
 
 
 class RewardShaper:
-    """Stateful per-env shaper.  Call reset(env) after env.reset(), then step(env, ...) after env.step()."""
+    """Stateful environment reward shaper for multi-agent coordination."""
 
     def __init__(self, cfg: RewardConfig, n_agents: int, height: int, width: int, view_radius: int,
                  v_high: float):

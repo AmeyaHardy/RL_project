@@ -1,3 +1,4 @@
+"""Visualisation tools: live interactive rendering and GIF export for SwarmSearchEnv."""
 from __future__ import annotations
 
 import argparse
@@ -6,23 +7,53 @@ import sys
 import matplotlib
 import numpy as np
 
-try:
-    from env import (DOWN, DROP, LEFT, PICK, RIGHT, STAY, UP,
-                     EnvConfig, SwarmSearchEnv, PERSIST, TEMP, MAL)
-except ImportError:
-    from swarm_env import (DOWN, DROP, LEFT, PICK, RIGHT, STAY, UP,
-                           EnvConfig, SwarmSearchEnv, PERSIST, TEMP, MAL)
-
-try:
-    from greedy_baseline import GreedyPolicy, observation_action_mask
-except ImportError:
-    from baseline_greedy import GreedyPolicy, observation_action_mask
+from env import (DOWN, DROP, LEFT, PICK, RIGHT, STAY, UP,
+                 EnvConfig, SwarmSearchEnv, PERSIST, TEMP, MAL)
+from greedy_baseline import GreedyPolicy, observation_action_mask
+from stages import cfg_from_dict, make_env_config
 
 PX = 24
+ROBOT_COLORS = ["#00e5ff", "#ff2bd6", "#39ff14", "#ffffff", "#ff9100", "#b388ff", "#ffeb3b", "#ff5252"]
 
 
-def make_policy(name: str, env: SwarmSearchEnv, seed: int = 0):
-    """Create policy action function for greedy or random control."""
+class HierActor:
+    """Callable wrapper for hierarchical policies exposing current goals for overlay rendering."""
+
+    def __init__(self, pol):
+        self.pol, self.pl = pol, pol.pl
+
+    def __call__(self, obs):
+        return self.pol.act(obs, None)
+
+    def overlay(self, env):
+        pl, segs, marks = self.pl, [], []
+        for i, (y, x) in enumerate(env.pos):
+            c = ROBOT_COLORS[i % len(ROBOT_COLORS)]
+            g = pl.goal[i] if i < len(pl.goal) else None
+            if env.carry[i] is not None:
+                tgt, shape = pl.depot, "D"                       # delivering
+            elif g is not None and g[0] in ("item", "region"):
+                tgt, shape = g[1], ("o" if g[0] == "item" else "s")
+            else:
+                continue
+            segs.append((x, y, tgt[1], tgt[0], c))
+            marks.append((tgt[1], tgt[0], c, shape))
+        return segs, marks
+
+
+def make_policy(name: str, env: SwarmSearchEnv, seed: int = 0, checkpoint=None, memory: bool = True):
+    """Create policy action function: greedy / random, or a planner+executor policy with a goal chooser."""
+    if name in ("scripted", "nearest_goal", "random_goal", "hmappo"):
+        from hier import ChooserHierPolicy, ScriptedHierPolicy
+        if name == "scripted":
+            pol = ScriptedHierPolicy(env, memory=memory)
+        elif name == "hmappo":
+            from hmappo import HMappoPolicy
+            pol = HMappoPolicy.from_checkpoint(checkpoint, env.cfg, deterministic=True)
+        else:
+            pol = ChooserHierPolicy(env, name.split("_")[0], memory=memory)
+        pol.reset(seed)
+        return HierActor(pol)
     if name == "greedy":
         return GreedyPolicy(env, seed=seed).act
     if name == "random":
@@ -38,7 +69,7 @@ def make_policy(name: str, env: SwarmSearchEnv, seed: int = 0):
             return actions
 
         return random_act
-    raise ValueError(f"Unknown policy '{name}'. Must be 'greedy' or 'random'.")
+    raise ValueError(f"Unknown policy '{name}'.")
 
 
 def render_step_frame(env: SwarmSearchEnv, fog: bool, view: str = "true", agent: int = 0, px: int = PX):
@@ -99,12 +130,24 @@ def setup_figure(img_shape, px: int = PX):
     return fig, ax
 
 
-def update_ax(ax, im, texts, img, labels, title, px: int = PX):
-    """Update imshow canvas and text annotations."""
+def get_overlay(policy, env):
+    return policy.overlay(env) if hasattr(policy, "overlay") else None
+
+
+def update_ax(ax, im, texts, img, labels, title, px: int = PX, overlay=None):
+    """Update imshow canvas, text annotations and (optional) goal overlay."""
     im.set_data(img)
     for t in texts:
         t.remove()
     texts.clear()
+    if overlay is not None:
+        segs, marks = overlay
+        for x0, y0, x1, y1, c in segs:
+            texts.extend(ax.plot([x0 * px + px / 2, x1 * px + px / 2], [y0 * px + px / 2, y1 * px + px / 2],
+                                 color=c, lw=1.6, alpha=0.9, zorder=5))
+        for x, y, c, m in marks:
+            texts.append(ax.scatter([x * px + px / 2], [y * px + px / 2], s=90, marker=m, facecolors="none",
+                                    edgecolors=c, linewidths=2, zorder=6))
     for x, y, s, col in labels:
         texts.append(ax.text(x * px + px / 2, y * px + px / 2, s,
                              color=col, ha="center", va="center",
@@ -113,7 +156,7 @@ def update_ax(ax, im, texts, img, labels, title, px: int = PX):
 
 
 def stream_to_gif(env: SwarmSearchEnv, policy, seed: int, steps: int, fog: bool,
-                  fps: int, save_path: str, view: str = "true", agent: int = 0, px: int = PX):
+                  fps: int, save_path: str, view: str = "true", agent: int = 0, px: int = PX, show_goals: bool = True):
     """Stream environment simulation frames directly to GIF file."""
     import matplotlib.pyplot as plt
     from matplotlib import animation
@@ -127,6 +170,7 @@ def stream_to_gif(env: SwarmSearchEnv, policy, seed: int, steps: int, fog: bool,
 
         fig, ax = setup_figure(img.shape, px=px)
         im = ax.imshow(img)
+        ax.autoscale(False)
         texts = []
         update_ax(ax, im, texts, img, labels, title, px=px)
 
@@ -141,7 +185,8 @@ def stream_to_gif(env: SwarmSearchEnv, policy, seed: int, steps: int, fog: bool,
             actions = policy(obs)
             obs, rewards, terminations, truncations, infos = env.step(actions)
             img, labels, title = render_step_frame(env, fog=fog, view=view, agent=agent, px=px)
-            update_ax(ax, im, texts, img, labels, title, px=px)
+            update_ax(ax, im, texts, img, labels, title, px=px,
+                      overlay=get_overlay(policy, env) if (show_goals and view == "true") else None)
             writer.grab_frame()
             frame_count += 1
 
@@ -163,7 +208,7 @@ def stream_to_gif(env: SwarmSearchEnv, policy, seed: int, steps: int, fog: bool,
 
 
 def live_animation(env: SwarmSearchEnv, policy, seed: int, steps: int, fog: bool,
-                   fps: int, view: str = "true", agent: int = 0, px: int = PX):
+                   fps: int, view: str = "true", agent: int = 0, px: int = PX, show_goals: bool = True):
     """Execute live interactive Matplotlib animation of episode."""
     import matplotlib.pyplot as plt
     from matplotlib import animation
@@ -172,12 +217,13 @@ def live_animation(env: SwarmSearchEnv, policy, seed: int, steps: int, fog: bool
     try:
         obs, _ = env.reset(seed=seed)
         frames = []
-        frames.append(render_step_frame(env, fog=fog, view=view, agent=agent, px=px))
+        ov = lambda: get_overlay(policy, env) if (show_goals and view == "true") else None
+        frames.append(render_step_frame(env, fog=fog, view=view, agent=agent, px=px) + (None,))
 
         while env.agents and env.t < steps:
             actions = policy(obs)
             obs, rewards, terminations, truncations, infos = env.step(actions)
-            frames.append(render_step_frame(env, fog=fog, view=view, agent=agent, px=px))
+            frames.append(render_step_frame(env, fog=fog, view=view, agent=agent, px=px) + (ov(),))
             if all(terminations.values()) or all(truncations.values()):
                 break
 
@@ -187,11 +233,12 @@ def live_animation(env: SwarmSearchEnv, policy, seed: int, steps: int, fog: bool
 
         fig, ax = setup_figure(frames[0][0].shape, px=px)
         im = ax.imshow(frames[0][0])
+        ax.autoscale(False)
         texts = []
 
         def draw(k):
-            img, labels, title = frames[k]
-            update_ax(ax, im, texts, img, labels, title, px=px)
+            img, labels, title, overlay = frames[k]
+            update_ax(ax, im, texts, img, labels, title, px=px, overlay=overlay)
             return [im]
 
         anim = animation.FuncAnimation(
@@ -210,12 +257,16 @@ def live_animation(env: SwarmSearchEnv, policy, seed: int, steps: int, fog: bool
 def main():
     """Parse command-line arguments and run episode visualization."""
     p = argparse.ArgumentParser(description="Visualize / simulate SwarmSearchEnv.")
-    p.add_argument("--policy", choices=["greedy", "random"], default="greedy",
-                   help="Policy to evaluate ('greedy' or 'random')")
+    p.add_argument("--policy", choices=["greedy", "random", "scripted", "nearest_goal", "random_goal", "hmappo"],
+                   default="greedy", help="greedy/random, or planner+executor with a goal chooser (hmappo = trained)")
+    p.add_argument("--checkpoint", type=str, default=None, help="checkpoint for --policy hmappo (e.g. runs/hw4/best.pt)")
+    p.add_argument("--stage", type=int, default=4, choices=[1, 2, 3, 4], help="env stage (ignored for hmappo: uses checkpoint cfg)")
+    p.add_argument("--no-memory", action="store_true", help="planner without window memory (ablation)")
+    p.add_argument("--no-goals", action="store_true", help="do not draw goal lines/markers")
     p.add_argument("--info-mode", choices=["shared", "private", "window"], default="shared",
                    help="Information sharing mode ('shared', 'private', or 'window')")
     p.add_argument("--seed", type=int, default=0, help="Random seed for environment and policy")
-    p.add_argument("--steps", type=int, default=300, help="Maximum episode steps")
+    p.add_argument("--steps", type=int, default=None, help="Maximum episode steps (default: the env config's max_steps)")
     p.add_argument("--fps", type=int, default=10, help="Animation frames per second")
     p.add_argument("--fog", choices=["on", "off"], default="on", help="Enable or disable fog of war in visualization")
     p.add_argument("--view", choices=["true", "agent", "both"], default="true",
@@ -226,15 +277,23 @@ def main():
 
     if args.fps <= 0:
         p.error("--fps must be a positive integer.")
-    if args.steps <= 0:
+    if args.steps is not None and args.steps <= 0:
         p.error("--steps must be a positive integer.")
+    if args.policy == "hmappo" and not args.checkpoint:
+        p.error("--checkpoint is required for --policy hmappo")
     if args.seed < 0:
         p.error("--seed must be a non-negative integer.")
 
-    env = SwarmSearchEnv(
-        EnvConfig(max_steps=args.steps, info_mode=args.info_mode),
-        render_mode="rgb_array"
-    )
+    if args.policy == "hmappo":
+        import torch
+        cfg = cfg_from_dict(torch.load(args.checkpoint, map_location="cpu", weights_only=False)["env_cfg"])
+        print(f"using the checkpoint's env config: info_mode={cfg.info_mode}, {cfg.n_agents} robots, {cfg.height}x{cfg.width}")
+    else:
+        cfg = make_env_config(args.stage, args.info_mode)
+    if args.steps is not None:
+        cfg.max_steps = args.steps
+    steps = cfg.max_steps
+    env = SwarmSearchEnv(cfg, render_mode="rgb_array")
 
     if args.agent < 0 or args.agent >= env.cfg.n_agents:
         p.error(f"--agent must be between 0 and {env.cfg.n_agents - 1}.")
@@ -243,14 +302,14 @@ def main():
         matplotlib.use("Agg")
 
     fog_enabled = (args.fog == "on")
-    policy = make_policy(args.policy, env, seed=args.seed)
+    policy = make_policy(args.policy, env, seed=args.seed, checkpoint=args.checkpoint, memory=not args.no_memory)
 
     if args.save:
-        stream_to_gif(env, policy, args.seed, args.steps, fog_enabled, args.fps,
-                      args.save, view=args.view, agent=args.agent, px=PX)
+        stream_to_gif(env, policy, args.seed, steps, fog_enabled, args.fps,
+                      args.save, view=args.view, agent=args.agent, px=PX, show_goals=not args.no_goals)
     else:
-        live_animation(env, policy, args.seed, args.steps, fog_enabled, args.fps,
-                       view=args.view, agent=args.agent, px=PX)
+        live_animation(env, policy, args.seed, steps, fog_enabled, args.fps,
+                       view=args.view, agent=args.agent, px=PX, show_goals=not args.no_goals)
 
 
 if __name__ == "__main__":
