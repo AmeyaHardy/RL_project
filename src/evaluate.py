@@ -1,4 +1,23 @@
-"""Evaluation protocol for SwarmSearchEnv policies with bootstrap confidence intervals and paired comparisons."""
+"""
+Evaluation protocol for SwarmSearchEnv.
+
+Principles
+  * Fixed, disjoint seed splits (train / val / test) -> no map is ever shared between them.
+  * Every policy is run on the SAME seeds, so comparisons are paired (map-to-map variance cancels).
+  * Report bootstrap 95% confidence intervals, never just a mean.
+  * Stress variants (dense / rushed / ...) test generalisation beyond the training distribution.
+
+Policy interface (anything with these two methods works):
+    policy.reset(seed: int)
+    policy.act(obs: dict, infos: dict) -> {agent: action}
+
+Usage
+  python evaluate.py run --policy greedy --info-mode shared --split val --episodes 50 --out res/greedy.json
+  python evaluate.py run --policy random --stage 1 --split val --out res/random.json
+  python evaluate.py run --policy mappo  --checkpoint runs/s1/best.pt --split val --out res/mappo.json
+  python evaluate.py compare res/mappo.json res/greedy.json
+  python evaluate.py plan res/greedy.json --halfwidth 2.0        # how many episodes do I need?
+"""
 from __future__ import annotations
 
 import argparse
@@ -17,6 +36,8 @@ METRICS = ["return", "value", "deliveries", "persist_delivered", "temp_delivered
            "coverage", "mean_carrying", "overlap"]      # last three: coordination diagnostics
 PRIMARY = "return"
 
+
+# ----------------------------------------------------------------------- policies
 class GreedyAdapter:
     def __init__(self, env: SwarmSearchEnv, **kw):
         self.env, self.kw, self.pol = env, kw, None
@@ -178,13 +199,21 @@ def cmd_run(args):
     if args.policy in ("mappo", "hmappo"):
         import torch
         ckpt_cfg = torch.load(args.checkpoint, map_location="cpu", weights_only=False)["env_cfg"]
-        cfg = cfg_from_dict(ckpt_cfg, variant=args.variant)
+        if args.eval_stage is not None:      # zero-shot: run a checkpoint on a different stage (same info mode)
+            cfg = make_env_config(args.eval_stage, ckpt_cfg["info_mode"])
+            for k, v in VARIANTS[args.variant].items():
+                setattr(cfg, k, v)
+        else:
+            cfg = cfg_from_dict(ckpt_cfg, variant=args.variant)
     else:
         cfg = make_env_config(args.stage, args.info_mode)
         for k, v in VARIANTS[args.variant].items():
             setattr(cfg, k, v)
     seeds = split_seeds(args.split, args.episodes)
     label = args.label or (args.policy if args.policy not in ("mappo", "hmappo") else os.path.basename(args.checkpoint))
+    if args.policy in ("mappo", "hmappo") and args.eval_stage is not None:
+        print(f"evaluating {args.checkpoint} zero-shot on stage {args.eval_stage}: {cfg.n_agents} robots, {cfg.height}x{cfg.width}, "
+              f"{cfg.max_steps} steps, info_mode={cfg.info_mode}")
     res = evaluate_policy(cfg, build_policy_factory(args, ckpt_cfg), seeds, label, args.split, args.variant)
     print(format_summary(res))
     if args.out:
@@ -225,6 +254,8 @@ def main():
     r.add_argument("--checkpoint", type=str, default=None)
     r.add_argument("--stochastic", action="store_true", help="sample actions instead of argmax (mappo)")
     r.add_argument("--stage", type=int, default=4)
+    r.add_argument("--eval-stage", type=int, default=None,
+                   help="hmappo/mappo: evaluate the checkpoint on this stage instead of the one it was trained on")
     r.add_argument("--info-mode", choices=["shared", "private", "window"], default="shared")
     r.add_argument("--split", choices=["val", "test"], default="val")
     r.add_argument("--episodes", type=int, default=None)
