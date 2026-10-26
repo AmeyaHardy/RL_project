@@ -6,7 +6,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from env import DOWN, DROP, LEFT, PICK, RIGHT, STAY, UP, EnvConfig, HANDLING_TIME
+from .env import DOWN, DROP, LEFT, PICK, RIGHT, STAY, UP, EnvConfig, HANDLING_TIME
 
 MOVES = {UP: (-1, 0), DOWN: (1, 0), LEFT: (0, -1), RIGHT: (0, 1)}
 KI, KR = 20, 20                  # max item / region candidates

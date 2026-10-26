@@ -8,9 +8,9 @@ import time
 import numpy as np
 import torch
 
-from evaluate import evaluate_policy
-from mappo import MAPPO, MappoPolicy, PPOConfig
-from stages import cfg_to_dict, make_env_config, split_seeds
+from .evaluate import evaluate_policy
+from .mappo import MAPPO, MappoPolicy, PPOConfig
+from .stages import cfg_to_dict, make_env_config, split_seeds
 
 
 def main():

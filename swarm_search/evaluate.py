@@ -28,8 +28,8 @@ from typing import Callable, Dict, List, Optional, Sequence
 
 import numpy as np
 
-from env import SwarmSearchEnv, EnvConfig
-from stages import (VARIANTS, cfg_from_dict, cfg_to_dict, make_env_config, split_seeds)
+from .env import SwarmSearchEnv, EnvConfig
+from .stages import (VARIANTS, cfg_from_dict, cfg_to_dict, make_env_config, split_seeds)
 
 METRICS = ["return", "value", "deliveries", "persist_delivered", "temp_delivered",
            "temp_expired", "temp_capture", "collisions", "malicious_picked", "length",
@@ -43,7 +43,7 @@ class GreedyAdapter:
         self.env, self.kw, self.pol = env, kw, None
 
     def reset(self, seed: int):
-        from greedy_baseline import GreedyPolicy
+        from .greedy_baseline import GreedyPolicy
         self.pol = GreedyPolicy(self.env, seed=seed, **self.kw)
 
     def act(self, obs, infos):
@@ -182,15 +182,15 @@ def build_policy_factory(args, ckpt_cfg: Optional[dict]):
     if args.policy == "random":
         return lambda env: RandomAdapter(env)
     if args.policy == "scripted":                    # hand-written goal chooser + the same executor (no torch)
-        from hier import ScriptedHierPolicy
+        from .hier import ScriptedHierPolicy
         return lambda env: ScriptedHierPolicy(env, memory=not args.no_memory)
     if args.policy in ("random_goal", "nearest_goal"):   # same planner+executor, non-learned goal chooser
-        from hier import ChooserHierPolicy
+        from .hier import ChooserHierPolicy
         return lambda env: ChooserHierPolicy(env, args.policy.split("_")[0], memory=not args.no_memory)
     if args.policy == "hmappo":
-        from hmappo import HMappoPolicy
+        from .hmappo import HMappoPolicy
         return lambda env: HMappoPolicy.from_checkpoint(args.checkpoint, env.cfg, deterministic=not args.stochastic)
-    from mappo import MappoPolicy                    # lazy: only needs torch for learned policies
+    from .mappo import MappoPolicy                    # lazy: only needs torch for learned policies
     return lambda env: MappoPolicy.from_checkpoint(args.checkpoint, deterministic=not args.stochastic)
 
 

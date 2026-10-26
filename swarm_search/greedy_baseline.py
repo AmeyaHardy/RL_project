@@ -7,8 +7,8 @@ from typing import Dict, Optional, Set, Tuple
 
 import numpy as np
 
-from env import (DOWN, DROP, LEFT, PICK, RIGHT, STAY, UP,
-                 EnvConfig, SwarmSearchEnv, HANDLING_TIME, PERSIST, TEMP, MAL)
+from .env import (DOWN, DROP, LEFT, PICK, RIGHT, STAY, UP,
+                  EnvConfig, SwarmSearchEnv, HANDLING_TIME, PERSIST, TEMP, MAL)
 
 DIRS = {UP: (-1, 0), DOWN: (1, 0), LEFT: (0, -1), RIGHT: (0, 1)}
 OPPOSITE = {UP: DOWN, DOWN: UP, LEFT: RIGHT, RIGHT: LEFT}

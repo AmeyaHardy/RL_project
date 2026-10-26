@@ -7,10 +7,10 @@ import sys
 import matplotlib
 import numpy as np
 
-from env import (DOWN, DROP, LEFT, PICK, RIGHT, STAY, UP,
-                 EnvConfig, SwarmSearchEnv, PERSIST, TEMP, MAL)
-from greedy_baseline import GreedyPolicy, observation_action_mask
-from stages import cfg_from_dict, make_env_config
+from .env import (DOWN, DROP, LEFT, PICK, RIGHT, STAY, UP,
+                  EnvConfig, SwarmSearchEnv, PERSIST, TEMP, MAL)
+from .greedy_baseline import GreedyPolicy, observation_action_mask
+from .stages import cfg_from_dict, make_env_config
 
 PX = 24
 ROBOT_COLORS = ["#00e5ff", "#ff2bd6", "#39ff14", "#ffffff", "#ff9100", "#b388ff", "#ffeb3b", "#ff5252"]
@@ -44,11 +44,11 @@ class HierActor:
 def make_policy(name: str, env: SwarmSearchEnv, seed: int = 0, checkpoint=None, memory: bool = True):
     """Create policy action function: greedy / random, or a planner+executor policy with a goal chooser."""
     if name in ("scripted", "nearest_goal", "random_goal", "hmappo"):
-        from hier import ChooserHierPolicy, ScriptedHierPolicy
+        from .hier import ChooserHierPolicy, ScriptedHierPolicy
         if name == "scripted":
             pol = ScriptedHierPolicy(env, memory=memory)
         elif name == "hmappo":
-            from hmappo import HMappoPolicy
+            from .hmappo import HMappoPolicy
             pol = HMappoPolicy.from_checkpoint(checkpoint, env.cfg, deterministic=True)
         else:
             pol = ChooserHierPolicy(env, name.split("_")[0], memory=memory)

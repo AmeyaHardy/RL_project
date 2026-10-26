@@ -5,11 +5,11 @@ from typing import Optional
 
 import numpy as np
 
-from env import SwarmSearchEnv
-from evaluate import episode_metrics
-from hier import HPlanner, MOVES
-from rewards import RewardConfig, RewardShaper
-from stages import TRAIN_SEED_BASE, cfg_from_dict
+from .env import SwarmSearchEnv
+from .evaluate import episode_metrics
+from .hier import HPlanner, MOVES
+from .rewards import RewardConfig, RewardShaper
+from .stages import TRAIN_SEED_BASE, cfg_from_dict
 
 
 class HEnv:

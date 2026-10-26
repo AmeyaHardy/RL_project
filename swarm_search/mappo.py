@@ -12,10 +12,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical
 
-from env import (SwarmSearchEnv, N_ACTIONS, N_LOCAL_CH, N_TEAM_CH, N_SCALARS,
-                 PERSIST, TEMP, MAL, PICK, DROP)
-from evaluate import episode_metrics
-from stages import TRAIN_SEED_BASE, cfg_from_dict
+from .env import (SwarmSearchEnv, N_ACTIONS, N_LOCAL_CH, N_TEAM_CH, N_SCALARS,
+                  PERSIST, TEMP, MAL, PICK, DROP)
+from .evaluate import episode_metrics
+from .stages import TRAIN_SEED_BASE, cfg_from_dict
 
 
 # =============================================================== environments

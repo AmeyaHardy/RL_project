@@ -2,7 +2,7 @@
 from dataclasses import asdict, fields
 from typing import Optional
 
-from env import EnvConfig
+from .env import EnvConfig
 
 TRAIN_SEED_BASE = 100_000
 SPLITS = {"val": (10_000, 50), "test": (20_000, 100)}   # (first seed, default #episodes)

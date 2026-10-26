@@ -8,13 +8,12 @@ import unittest
 
 import numpy as np
 
-sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from env import (DOWN, DROP, LEFT, PICK, RIGHT, STAY, UP,
-                 EnvConfig, SwarmSearchEnv, PERSIST, TEMP, MAL, Status)
-from greedy_baseline import GreedyPolicy, bfs, observation_action_mask, evaluate
-from visualize import make_policy, render_step_frame, stream_to_gif
+from swarm_search.env import (DOWN, DROP, LEFT, PICK, RIGHT, STAY, UP,
+                               EnvConfig, SwarmSearchEnv, PERSIST, TEMP, MAL, Status)
+from swarm_search.greedy_baseline import GreedyPolicy, bfs, observation_action_mask, evaluate
+from swarm_search.visualize import make_policy, render_step_frame, stream_to_gif
 
 
 class TestAuditAndPatches(unittest.TestCase):

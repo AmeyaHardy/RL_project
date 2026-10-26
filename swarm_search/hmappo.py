@@ -11,10 +11,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical
 
-from henv import HEnv
-from hier import FC, FI, FR, KI, KR, HPlanner, critic_dim
-from rewards import RewardConfig
-from stages import cfg_from_dict
+from .henv import HEnv
+from .hier import FC, FI, FR, KI, KR, HPlanner, critic_dim
+from .rewards import RewardConfig
+from .stages import cfg_from_dict
 
 
 # ======================================================================== networks
