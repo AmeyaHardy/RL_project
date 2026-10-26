@@ -79,7 +79,7 @@ Across paired benchmark evaluations on held-out validation and test seed splits 
 
 ### 2. Clone the Repository
 ```bash
-git clone https://github.com/<your-username>/RL_project.git
+git clone https://github.com/AmeyaHardy/RL_project.git
 cd RL_project
 ```
 
