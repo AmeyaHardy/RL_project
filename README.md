@@ -77,13 +77,13 @@ Across paired benchmark evaluations on held-out validation and test seed splits 
 
 ## Local Results Page & GIF Generator
 
-Browse the H-MAPPO results against baselines, its training log, and render new episode GIFs on demand from its weights (`best.pt` / `latest.pt`) or any baseline — all served locally:
+Browse the H-MAPPO results against baselines and the training logs, and render new episode GIFs on demand from any of the models' weights (`best.pt` / `latest.pt`) or any baseline — all served locally:
 
 ```bash
 python viz_server.py            # opens http://127.0.0.1:8080
 ```
 
-Generated GIFs are cached in `viz/generated/` (git-ignored). The page features one trained model; which run and result files are shown is set by `FEATURED_RUNS` / `FEATURED_RESULTS` at the top of `viz_server.py`.
+Generated GIFs are cached in `viz/generated/` (git-ignored). The page shows one H-MAPPO model per curriculum stage (12×12, 20×20, 30×30); which runs and result files are shown is set by `FEATURED_RUNS` / `FEATURED_RESULTS` at the top of `viz_server.py`.
 
 ---
 

@@ -197,7 +197,7 @@ tr.group td { background: var(--bg); color: var(--text-2); font-weight: 600; tex
 <!-- ═════════ TRAINING ═════════ -->
 <section id="training">
   <h2>Training</h2>
-  <p class="lede">The H-MAPPO training log. Pick any logged column; hover for values.</p>
+  <p class="lede">Training logs for each H-MAPPO model. Toggle models, pick any logged column; hover for values.</p>
   <div class="chips" id="runChips" style="margin-bottom:10px"></div>
   <div class="card">
     <div class="row" style="margin-bottom:6px">
@@ -215,7 +215,7 @@ tr.group td { background: var(--bg); color: var(--text-2); font-weight: 600; tex
 <!-- ═════════ GENERATOR ═════════ -->
 <section id="generate">
   <h2>On-demand GIF generator</h2>
-  <p class="lede">Roll out the trained H-MAPPO weights (or a baseline) on any seed and render it locally.
+  <p class="lede">Roll out any of the trained H-MAPPO models (or a baseline) on any seed and render it locally.
     Jobs queue and run one at a time; identical requests are served from cache.</p>
   <div class="card" id="genCard">
     <div class="gen-form">
@@ -324,7 +324,7 @@ function tickFmt(v) { const a = Math.abs(v); return a >= 1e6 ? (v / 1e6).toFixed
     return;
   }
   const tr = RESULTS.filter(r => r.trained).length;
-  $('#introLine').textContent = `H-MAPPO (${RUNS[0] ? RUNS[0].display.replace('H-MAPPO · ', '') : ''}) evaluated in ${tr} settings, against ${RESULTS.length - tr} baseline evaluations on the same seeds and maps.`;
+  $('#introLine').textContent = `${RUNS.length} H-MAPPO models (${RUNS.map(r => r.grid + ', ' + r.n_agents + ' robot' + (r.n_agents === 1 ? '' : 's')).join(' · ')}) · ${tr} H-MAPPO evaluations against ${RESULTS.length - tr} baseline evaluations on the same seeds and maps.`;
   initH2H(); initAll(); initTraining(); initGen(); loadGallery();
   window.addEventListener('resize', debounce(redrawAll, 150));
 })();
@@ -568,8 +568,7 @@ function drawDChart() {
 let T = { on: new Set(), metric: 'val_return' };
 function runColor(name) { const i = RUNS.findIndex(r => r.name === name); return css(SERIES[i % SERIES.length]); }
 function initTraining() {
-  const def = ['hw4', 'hw4_s1', 'hw4_s2', 'hw4_up'].filter(n => RUNS.some(r => r.name === n));
-  (def.length ? def : RUNS.slice(0, 4).map(r => r.name)).forEach(n => T.on.add(n));
+  RUNS.forEach(r => T.on.add(r.name));
   const cols = new Set(); RUNS.forEach(r => Object.keys(r.log).forEach(k => cols.add(k)));
   ['update', 'env_steps'].forEach(k => cols.delete(k));
   $('#tMetric').innerHTML = [...cols].map(c => `<option>${c}</option>`).join('');

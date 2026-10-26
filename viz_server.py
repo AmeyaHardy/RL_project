@@ -62,22 +62,25 @@ METRICS = {
 }
 
 # ── What the page shows ─────────────────────────────────────────────────────
-# Only the featured H-MAPPO checkpoint is shown. FEATURED_RESULTS maps each result file it produced to its
-# run dir — verified 2026-11-15 by re-evaluating runs/hw4/best.pt and matching per-episode returns exactly.
+# One H-MAPPO model per curriculum stage (hw2_up is a byte-identical duplicate of hw2, so it is left out;
+# hw4_s1 / hw4_s2 / hw4_up are alternative stage-4 runs and are left out in favour of hw4).
+# FEATURED_RESULTS maps each result file to the run that produced it — verified 2026-11-15 by re-evaluating
+# each checkpoint and matching per-episode returns exactly.
 # Baselines are shown only when evaluated on the same seeds and map as one of these results.
-FEATURED_RUNS = ["hw4"]
-FEATURED_RESULTS = {"hw4": "hw4", "t_hmappo": "hw4", "t5_zs_s0": "hw4"}
+FEATURED_RUNS = ["hw2", "hw4", "h5"]
+FEATURED_RESULTS = {"hw4": "hw4", "t_hmappo": "hw4", "t5_zs_s0": "hw4", "t_hmappo_5": "h5"}
 
 # Captions for pre-rendered GIFs (described by content, not file name); HIDDEN_GIFS are not from the featured model.
 GIF_CAPTIONS = {
-    "viz/hmappo_20000.gif": "H-MAPPO · test seed 20000",
+    "viz/hmappo_20000.gif": "H-MAPPO (20×20 map, 4 robots) · test seed 20000",
+    "viz/hmappo5_20000.gif": "H-MAPPO (30×30 map, 5 robots) · test seed 20000",
     "viz/greedy_20000.gif": "Greedy · test seed 20000",
     "viz/scripted_20000.gif": "Scripted planner · test seed 20000",
     "shared_300.gif": "Shared-map comms · 300 steps",
     "window_300.gif": "Local-window comms · 300 steps",
     "private_300.gif": "No comms (private) · 300 steps",
 }
-HIDDEN_GIFS = {"viz/hmappo5_20000.gif"}
+HIDDEN_GIFS: set[str] = set()
 
 SPLIT_NAMES = {"val": "Validation", "test": "Test"}
 COMM_NAMES = {"shared": "shared-map comms", "window": "local-window comms", "private": "no comms"}
@@ -285,7 +288,7 @@ def discover_runs() -> list[dict]:
             "init_from": args.get("init_actor_from"), "log_file": logs[0].name if logs else None,
             "display": _run_display(env), "config": _public_config(cfg),
         })
-    return runs
+    return sorted(runs, key=lambda r: (r["stage"] or 0, r["name"]))
 
 
 def _run_dir(name: str) -> Path:
