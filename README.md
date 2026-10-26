@@ -170,7 +170,7 @@ python tests/test_hier.py 4 10
 
 ### 3. Visualize & Generate Episode GIFs
 
-Generate and inspect an animated GIF of a trained agent or baseline solving an episode:
+Generate and inspect an animated GIF of a trained agent or baseline solving an episode (or use the point-and-click generator on the [local results page](#local-results-page--gif-generator)):
 
 ```bash
 # Render trained H-MAPPO agent on seed 20000
