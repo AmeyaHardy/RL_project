@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SwarmSearch Results</title>
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f6f6f4; --surface: #fcfcfb; --surface-2: #f0efec; --border: #dedcd6; --grid: #e9e7e2;
+  --text: #0b0b0b; --text-2: #52514e; --muted: #7a7973;
+  --accent: #2a78d6; --accent-ink: #ffffff;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #6250d6; --s8: #e34948;
+  --tie: #b5b3ac; --good: #0b7a3e; --bad: #c0362c; --good-bg: #e3f3e9; --bad-bg: #fbe7e5;
+  --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #111110; --surface: #1a1a19; --surface-2: #232321; --border: #33332f; --grid: #2a2a27;
+    --text: #f0efec; --text-2: #c3c2b7; --muted: #8f8e86; --accent: #3987e5;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #0ca30c; --s7: #9085e9; --s8: #e66767;
+    --tie: #5c5b55; --good: #4cc27e; --bad: #f07a70; --good-bg: #16301f; --bad-bg: #3a1b18;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #111110; --surface: #1a1a19; --surface-2: #232321; --border: #33332f; --grid: #2a2a27;
+  --text: #f0efec; --text-2: #c3c2b7; --muted: #8f8e86; --accent: #3987e5;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #0ca30c; --s7: #9085e9; --s8: #e66767;
+  --tie: #5c5b55; --good: #4cc27e; --bad: #f07a70; --good-bg: #16301f; --bad-bg: #3a1b18;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+[hidden] { display: none !important; }
+body { font: 14px/1.5 "Segoe UI", system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); }
+a { color: var(--accent); }
+header.top { position: sticky; top: 0; z-index: 20; background: color-mix(in srgb, var(--bg) 90%, transparent);
+  backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); }
+.top .inner { max-width: 1240px; margin: 0 auto; padding: 10px 16px; display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
+.top .brand { font-weight: 700; font-size: 15px; }
+.top nav { display: flex; gap: 14px; flex-wrap: wrap; }
+.top nav a { color: var(--text-2); text-decoration: none; font-size: 13px; }
+.top nav a:hover { color: var(--text); }
+.top .spacer { flex: 1; }
+.wrap { max-width: 1240px; margin: 0 auto; padding: 0 16px 64px; }
+section { padding: 36px 0 8px; }
+h1 { font-size: 26px; font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: 19px; font-weight: 650; margin-bottom: 4px; }
+h3 { font-size: 14px; font-weight: 650; margin: 18px 0 8px; }
+.lede { color: var(--text-2); margin-bottom: 16px; max-width: 820px; }
+.small { font-size: 12px; color: var(--muted); }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+.row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field > span { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+select, input[type=number], input[type=text] { background: var(--surface); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 8px; font: inherit; min-width: 0; }
+select:focus, input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+label.check { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); font-size: 13px; cursor: pointer; }
+button { font: inherit; cursor: pointer; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text); padding: 6px 12px; }
+button:hover { background: var(--surface-2); }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+button.primary:hover { filter: brightness(1.08); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.link { border: none; background: none; color: var(--accent); padding: 2px 4px; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 3px 10px; font-size: 12px; color: var(--text-2); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.chip.on { border-color: var(--text-2); color: var(--text); background: var(--surface-2); }
+.chip .sw { width: 10px; height: 10px; border-radius: 3px; }
+.chip.off .sw { opacity: .25; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+.tile { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+.tile .k { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+.tile .v { font-size: 24px; font-weight: 700; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.tile .d { font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.badge { display: inline-block; font-size: 11px; font-weight: 600; border-radius: 4px; padding: 1px 6px; }
+.badge.good { color: var(--good); background: var(--good-bg); }
+.badge.bad { color: var(--bad); background: var(--bad-bg); }
+.badge.neutral { color: var(--text-2); background: var(--surface-2); }
+.tbl-wrap { overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); max-height: 640px; }
+table { border-collapse: collapse; width: 100%; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+th, td { padding: 6px 10px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--grid); }
+th { position: sticky; top: 0; background: var(--surface-2); color: var(--text-2); font-weight: 600; font-size: 11.5px; cursor: pointer; user-select: none; z-index: 1; }
+th.l, td.l { text-align: left; }
+tbody tr:hover td { background: var(--surface-2); }
+tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent) !important; }
+td.best { font-weight: 700; color: var(--good); }
+td .ci { display: block; color: var(--muted); font-size: 10.5px; }
+tr.group td { background: var(--bg); color: var(--text-2); font-weight: 600; text-align: left; font-size: 12px; }
+.mono { font-family: var(--mono); font-size: 11.5px; }
+.chart { width: 100%; position: relative; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart text { fill: var(--muted); font-size: 11px; }
+.chart .axis line, .chart .gridline { stroke: var(--grid); }
+.chart .zero { stroke: var(--text-2); stroke-width: 1; }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--text-2); margin: 6px 0; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+#tip { position: fixed; pointer-events: none; z-index: 50; background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 10px; font-size: 12px; box-shadow: 0 6px 24px rgba(0,0,0,.18); display: none; max-width: 340px; font-variant-numeric: tabular-nums; }
+#tip b { font-weight: 650; }
+#tip .r { display: flex; justify-content: space-between; gap: 14px; }
+#tip .r .sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; }
+.grid2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+.gen-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; align-items: end; }
+.gen-form .wide { grid-column: span 2; }
+@media (max-width: 520px) { .gen-form .wide { grid-column: span 1; } }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.seg button { border: none; border-radius: 0; padding: 6px 12px; }
+.seg button.on { background: var(--accent); color: var(--accent-ink); }
+.jobs, .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+.gif { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; }
+.gif .img { background: #fff; aspect-ratio: 7/7.6; display: flex; align-items: center; justify-content: center; }
+.gif img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.gif .cap { padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+.gif .cap .t { font-weight: 600; font-size: 13px; word-break: break-word; }
+.gif .acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
+.bar { height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; width: 80%; }
+.bar > div { height: 100%; background: var(--accent); transition: width .4s; }
+.status { color: var(--text-2); font-size: 12px; text-align: center; padding: 0 12px; }
+.err { color: var(--bad); }
+.empty { color: var(--muted); padding: 24px; text-align: center; }
+.flash { animation: flash 1.2s; }
+@keyframes flash { 0% { box-shadow: 0 0 0 3px var(--accent); } 100% { box-shadow: 0 0 0 0 transparent; } }
+.cfgdiff td.diff { color: var(--text); font-weight: 600; }
+.cfgdiff td { color: var(--text-2); }
+.note { border-left: 3px solid var(--s4); padding: 6px 10px; background: var(--surface-2); border-radius: 4px; font-size: 12.5px; color: var(--text-2); margin: 10px 0; }
+</style>
+</head>
+<body>
+<header class="top"><div class="inner">
+  <span class="brand">SwarmSearch results</span>
+  <nav>
+    <a href="#h2h">Head-to-head</a><a href="#all">Results</a><a href="#training">Training</a>
+    <a href="#generate">GIF generator</a><a href="#gallery">Gallery</a>
+  </nav>
+  <span class="spacer"></span>
+  <button id="themeBtn" title="Toggle light/dark">◐ Theme</button>
+</div></header>
+
+<div class="wrap">
+
+<section>
+  <h1>Hierarchical MAPPO for cooperative search, pickup &amp; delivery</h1>
+  <p class="lede" id="introLine">Loading results…</p>
+</section>
+
+<!-- ═════════ HEAD TO HEAD ═════════ -->
+<section id="h2h">
+  <h2>Head-to-head (paired test)</h2>
+  <p class="lede">Any two results evaluated on the same seeds and map. Δ = A − B with 95% paired-bootstrap CI, computed live by
+    <span class="mono">swarm_search.evaluate.paired_compare</span>. Win counts are oriented so "A better" always means better (e.g. fewer collisions).</p>
+  <div class="row" style="margin-bottom:14px">
+    <label class="field"><span>A</span><select id="hA"></select></label>
+    <button id="hSwap" title="Swap A and B">⇄</button>
+    <label class="field"><span>B (same seeds &amp; map only)</span><select id="hB"></select></label>
+  </div>
+  <div class="tiles" id="hTiles"></div>
+  <div class="grid2" style="margin-top:16px">
+    <div class="tbl-wrap"><table id="hTable"></table></div>
+    <div class="card">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <strong id="hHistTitle">Per-seed difference</strong>
+        <select id="hMetric"></select>
+      </div>
+      <div class="legend" id="hHistLegend"></div>
+      <div class="chart" id="hHist"></div>
+      <p class="small" id="hHistNote"></p>
+    </div>
+  </div>
+</section>
+
+<!-- ═════════ ALL RESULTS ═════════ -->
+<section id="all">
+  <h2>Evaluation results</h2>
+  <p class="lede">Every H-MAPPO evaluation and the baselines run on the same seeds and maps, grouped by setting. Click a column to sort, a row to see its per-episode distribution.
+    ▶ re-renders that policy in the exact environment it was evaluated in.</p>
+  <div class="chips" id="settingChips" style="margin-bottom:12px"></div>
+  <div class="grid2">
+    <div class="card">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <strong>Mean with 95% CI</strong>
+        <select id="aMetric"></select>
+      </div>
+      <div class="legend"><span><i style="background:var(--s1)"></i>Trained (H-MAPPO)</span><span><i style="background:var(--s2)"></i>Baseline</span></div>
+      <div class="chart" id="aChart"></div>
+    </div>
+    <div class="card">
+      <strong id="dTitle">Per-episode distribution</strong>
+      <div class="small" id="dSub">Click a row in the table below.</div>
+      <div class="chart" id="dChart"></div>
+    </div>
+  </div>
+  <div class="tbl-wrap" style="margin-top:16px"><table id="aTable"></table></div>
+</section>
+
+<!-- ═════════ TRAINING ═════════ -->
+<section id="training">
+  <h2>Training</h2>
+  <p class="lede">The H-MAPPO training log. Pick any logged column; hover for values.</p>
+  <div class="chips" id="runChips" style="margin-bottom:10px"></div>
+  <div class="card">
+    <div class="row" style="margin-bottom:6px">
+      <label class="field"><span>Metric</span><select id="tMetric"></select></label>
+      <label class="field"><span>Smoothing</span><input type="range" id="tSmooth" min="1" max="25" value="1"></label>
+      <label class="check"><input type="checkbox" id="tBand" checked> val CI band</label>
+      <span class="small" id="tNote"></span>
+    </div>
+    <div class="chart" id="tChart"></div>
+  </div>
+  <h3><span id="cfgTitle">Training configuration</span> <label class="check" id="cfgAllWrap" style="font-weight:400;margin-left:10px"><input type="checkbox" id="cfgAll"> show all keys</label></h3>
+  <div class="tbl-wrap" style="max-height:420px"><table id="cfgTable" class="cfgdiff"></table></div>
+</section>
+
+<!-- ═════════ GENERATOR ═════════ -->
+<section id="generate">
+  <h2>On-demand GIF generator</h2>
+  <p class="lede">Roll out the trained H-MAPPO weights (or a baseline) on any seed and render it locally.
+    Jobs queue and run one at a time; identical requests are served from cache.</p>
+  <div class="card" id="genCard">
+    <div class="gen-form">
+      <div class="field wide"><span>Policy source</span>
+        <div class="seg" id="gSource"><button data-v="checkpoint" class="on">Trained checkpoint</button><button data-v="baseline">Baseline</button></div></div>
+      <label class="field g-ck wide"><span>Model</span><select id="gRun"></select></label>
+      <label class="field g-ck"><span>Weights</span><select id="gCkpt"></select></label>
+      <label class="field g-bl wide" hidden><span>Baseline</span><select id="gPolicy"></select></label>
+      <label class="check g-bl" hidden><input type="checkbox" id="gMemory" checked> planner memory</label>
+      <label class="field wide"><span>Environment</span><select id="gEnv"></select></label>
+      <label class="field g-res wide" hidden><span>Evaluation</span><select id="gResult"></select></label>
+      <label class="field g-im" hidden><span>Info mode</span><select id="gInfo"></select></label>
+      <label class="field"><span>Variant</span><select id="gVariant"></select></label>
+      <label class="field"><span>Seed</span><input type="number" id="gSeed" value="20000" min="0"></label>
+      <div class="field"><span>&nbsp;</span><div class="row" style="gap:4px">
+        <button class="link" data-seed="10000">val</button><button class="link" data-seed="20000">test</button><button class="link" data-seed="rand">random</button></div></div>
+      <label class="field"><span>Steps (blank = env max)</span><input type="number" id="gSteps" min="1" max="2000" placeholder="default"></label>
+      <label class="field"><span>FPS</span><input type="number" id="gFps" value="10" min="1" max="30"></label>
+      <label class="field"><span>View</span><select id="gView"><option value="true">Global (true state)</option><option value="agent">Single agent's observation</option><option value="both">Both</option></select></label>
+      <label class="field g-agent" hidden><span>Agent #</span><input type="number" id="gAgent" value="0" min="0" max="15"></label>
+      <label class="check"><input type="checkbox" id="gFog" checked> fog of war</label>
+      <label class="check"><input type="checkbox" id="gGoals" checked> goal overlay</label>
+      <div class="field"><span>&nbsp;</span><button class="primary" id="gGo">▶ Generate GIF</button></div>
+    </div>
+    <p class="small" id="gEnvNote" style="margin-top:10px"></p>
+  </div>
+  <h3>This session's renders</h3>
+  <div class="jobs" id="jobs"><div class="empty">Nothing rendered yet. A 300-step episode usually takes 20–60 s on CPU.</div></div>
+</section>
+
+<!-- ═════════ GALLERY ═════════ -->
+<section id="gallery">
+  <h2>GIF gallery</h2>
+  <p class="lede">Pre-rendered episodes plus everything the generator has produced.</p>
+  <div class="chips" id="galFilter" style="margin-bottom:12px">
+    <span class="chip on" data-f="all">All</span><span class="chip" data-f="pre">Pre-rendered</span><span class="chip" data-f="gen">Generated</span>
+  </div>
+  <div class="gallery" id="gal"></div>
+</section>
+
+</div>
+<div id="tip"></div>
+
+<script>
+'use strict';
+// ───────────────────────── helpers ─────────────────────────
+const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const api = async (u, o) => { const r = await fetch(u, o); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || r.statusText); return j; };
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const SERIES = ['--s1','--s2','--s3','--s4','--s5','--s6','--s7','--s8'];
+let METRICS = {}, RESULTS = [], RUNS = [], OPTS = null;
+
+function fmt(m, v) {
+  if (v == null || Number.isNaN(v)) return '—';
+  const f = (METRICS[m] || {}).fmt || 'f2';
+  if (f === 'pct') return (v * 100).toFixed(1) + '%';
+  if (f === 'f0') return v.toFixed(0);
+  if (f === 'f3') return v.toFixed(3);
+  return v.toFixed(2);
+}
+function fmtD(m, v) {  // signed delta
+  if (v == null) return '—';
+  const f = (METRICS[m] || {}).fmt, s = v > 0 ? '+' : v < 0 ? '−' : '±', a = Math.abs(v);
+  if (f === 'pct') return s + (a * 100).toFixed(1) + 'pp';
+  return s + (f === 'f3' ? a.toFixed(3) : f === 'f0' ? a.toFixed(0) : a.toFixed(2));
+}
+const mlabel = m => (METRICS[m] || {}).label || m;
+const mdir = m => (METRICS[m] || {}).dir ?? 0;
+
+// tooltip
+const tip = $('#tip');
+function showTip(html, ev) {
+  tip.innerHTML = html; tip.style.display = 'block';
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  let x = ev.clientX + 14, y = ev.clientY + 14;
+  if (x + w > innerWidth - 8) x = ev.clientX - w - 14;
+  if (y + h > innerHeight - 8) y = ev.clientY - h - 14;
+  tip.style.left = x + 'px'; tip.style.top = y + 'px';
+}
+const hideTip = () => tip.style.display = 'none';
+
+// scales / svg
+function nice(lo, hi, n = 5) {
+  if (lo === hi) { lo -= 1; hi += 1; }
+  const span = hi - lo, step0 = span / n, p = Math.pow(10, Math.floor(Math.log10(step0)));
+  const step = [1, 2, 2.5, 5, 10].map(k => k * p).find(s => s >= step0);
+  const a = Math.floor(lo / step) * step, b = Math.ceil(hi / step) * step, t = [];
+  for (let v = a; v <= b + step / 2; v += step) t.push(+v.toPrecision(12));
+  return { lo: a, hi: b, ticks: t };
+}
+const lin = (d0, d1, r0, r1) => v => r0 + (v - d0) / ((d1 - d0) || 1) * (r1 - r0);
+const NS = 'http://www.w3.org/2000/svg';
+function el(tag, attrs = {}, parent) { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; }
+function svgIn(container, W, H) { container.innerHTML = ''; const s = el('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img' }); container.appendChild(s); return s; }
+function tickFmt(v) { const a = Math.abs(v); return a >= 1e6 ? (v / 1e6).toFixed(a % 1e6 ? 1 : 0) + 'M' : a >= 1e3 ? (v / 1e3).toFixed(a % 1e3 ? 1 : 0) + 'k' : +v.toPrecision(4) + ''; }
+
+// ───────────────────────── boot ─────────────────────────
+(async function boot() {
+  initTheme();
+  try {
+    const [res, runs, opts] = await Promise.all([api('/api/results'), api('/api/runs'), api('/api/options')]);
+    METRICS = res.metrics; RESULTS = res.results; RUNS = runs.runs; OPTS = opts;
+  } catch (e) {
+    $('#introLine').innerHTML = `<span class="err">Could not reach the local server (${esc(e.message)}). Start it with <span class="mono">python viz_server.py</span> and open <span class="mono">http://127.0.0.1:8080</span>.</span>`;
+    return;
+  }
+  const tr = RESULTS.filter(r => r.trained).length;
+  $('#introLine').textContent = `H-MAPPO (${RUNS[0] ? RUNS[0].display.replace('H-MAPPO · ', '') : ''}) evaluated in ${tr} settings, against ${RESULTS.length - tr} baseline evaluations on the same seeds and maps.`;
+  initH2H(); initAll(); initTraining(); initGen(); loadGallery();
+  window.addEventListener('resize', debounce(redrawAll, 150));
+})();
+const fileName = t => String(t || 'episode').replace(/[^\w.-]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '') + '.gif';
+function debounce(f, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => f(...a), ms); }; }
+function redrawAll() { drawHist(); drawAChart(); drawDChart(); drawTChart(); }
+function initTheme() {
+  const saved = (() => { try { return localStorage.getItem('ss-theme'); } catch { return null; } })();
+  if (saved) document.documentElement.dataset.theme = saved;
+  $('#themeBtn').onclick = () => {
+    const cur = document.documentElement.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    const nxt = cur === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = nxt;
+    try { localStorage.setItem('ss-theme', nxt); } catch {}
+    redrawAll();
+  };
+}
+function resultOptions(filterFn) {
+  const bySet = {};
+  RESULTS.forEach(r => (bySet[r.setting] ??= []).push(r));
+  return Object.entries(bySet).map(([s, rs]) => `<optgroup label="${esc(s)}">` + rs.map(r =>
+    `<option value="${r.file}" ${filterFn && !filterFn(r) ? 'disabled' : ''}>${esc(r.name)}</option>`).join('') + '</optgroup>').join('');
+}
+
+// ───────────────────────── head to head ─────────────────────────
+let H = { data: null, metric: 'return' };
+function initH2H() {
+  const a = $('#hA');
+  a.innerHTML = resultOptions();
+  a.value = RESULTS.some(r => r.file === 'hw4') ? 'hw4' : RESULTS[0].file;
+  $('#hMetric').innerHTML = Object.keys(METRICS).map(m => `<option value="${m}">${esc(mlabel(m))}</option>`).join('');
+  a.onchange = () => { fillB(); runCompare(); };
+  $('#hB').onchange = runCompare;
+  $('#hSwap').onclick = () => { const av = a.value, bv = $('#hB').value; if (!bv) return; a.value = bv; fillB(av); runCompare(); };
+  $('#hMetric').onchange = e => { H.metric = e.target.value; drawHist(); markHRow(); };
+  fillB('greedy_s4'); runCompare();
+}
+function fillB(prefer) {
+  const A = RESULTS.find(r => r.file === $('#hA').value), b = $('#hB'), prev = prefer || b.value;
+  b.innerHTML = resultOptions(r => r.seeds_hash === A.seeds_hash && r.file !== A.file);
+  const ok = [...b.options].filter(o => !o.disabled);
+  b.value = ok.some(o => o.value === prev) ? prev : (ok.find(o => !RESULTS.find(r => r.file === o.value).trained) || ok[0] || {}).value || '';
+}
+async function setCompare(aFile, bFile) {
+  $('#hA').value = aFile; fillB(bFile); await runCompare();
+  document.getElementById('h2h').scrollIntoView({ behavior: 'smooth' });
+}
+async function runCompare() {
+  const a = $('#hA').value, b = $('#hB').value;
+  if (!b) { $('#hTiles').innerHTML = '<div class="empty">No other result shares these seeds.</div>'; $('#hTable').innerHTML = ''; $('#hHist').innerHTML = ''; H.data = null; return; }
+  try { H.data = await api(`/api/compare?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`); }
+  catch (e) { $('#hTiles').innerHTML = `<div class="empty err">${esc(e.message)}</div>`; return; }
+  renderH2H();
+}
+function oriented(m, row) {  // counts from A's perspective of "better"
+  const d = mdir(m);
+  if (d < 0) return { better: row.losses, tie: row.ties, worse: row.wins };
+  return { better: row.wins, tie: row.ties, worse: row.losses };
+}
+function verdict(m, row) {
+  const d = mdir(m);
+  if (!row.significant || d === 0) return row.significant ? '<span class="badge neutral">sig.</span>' : '<span class="badge neutral">n.s.</span>';
+  const good = (row.diff > 0) === (d > 0);
+  return `<span class="badge ${good ? 'good' : 'bad'}">${good ? 'A better' : 'B better'}</span>`;
+}
+function renderH2H() {
+  const { a, b, rows } = H.data;
+  const key = ['return', 'deliveries', 'temp_capture', 'temp_expired', 'collisions', 'overlap'].filter(m => rows[m]);
+  $('#hTiles').innerHTML = key.map(m => {
+    const r = rows[m], o = oriented(m, r);
+    return `<div class="tile"><div class="k">${esc(mlabel(m))}${mdir(m) < 0 ? ' ↓' : ''}</div>
+      <div class="v">${fmt(m, a.summary[m].mean)}</div>
+      <div class="d">vs ${fmt(m, b.summary[m].mean)} · Δ ${fmtD(m, r.diff)} ${verdict(m, r)}</div>
+      <div class="d small">CI [${fmtD(m, r.ci_lo)}, ${fmtD(m, r.ci_hi)}] · A better ${o.better}/${o.tie}/${o.worse}</div></div>`;
+  }).join('');
+  let h = `<thead><tr><th class="l">Metric</th><th title="${esc(a.name)}">A</th><th title="${esc(b.name)}">B</th><th>Δ (A−B)</th><th>A better / tie / worse</th></tr></thead><tbody>`;
+  for (const m of Object.keys(METRICS)) {
+    const r = rows[m]; if (!r) continue;
+    const sa = a.summary[m], sb = b.summary[m], o = oriented(m, r);
+    h += `<tr data-m="${m}" style="cursor:pointer"><td class="l">${esc(mlabel(m))}${mdir(m) < 0 ? ' ↓' : ''}</td>
+      <td>${fmt(m, sa.mean)}<span class="ci">[${fmt(m, sa.ci_lo)}, ${fmt(m, sa.ci_hi)}]</span></td>
+      <td>${fmt(m, sb.mean)}<span class="ci">[${fmt(m, sb.ci_lo)}, ${fmt(m, sb.ci_hi)}]</span></td>
+      <td>${fmtD(m, r.diff)}<span class="ci">[${fmtD(m, r.ci_lo)}, ${fmtD(m, r.ci_hi)}]</span></td>
+      <td>${mdir(m) === 0 ? '—' : `${o.better} / ${o.tie} / ${o.worse}`}<span class="ci">${verdict(m, r)}</span></td></tr>`;
+  }
+  $('#hTable').innerHTML = h + '</tbody>';
+  $$('#hTable tbody tr').forEach(tr => tr.onclick = () => { H.metric = tr.dataset.m; $('#hMetric').value = H.metric; drawHist(); markHRow(); });
+  $('#hMetric').value = H.metric; markHRow(); drawHist();
+}
+function markHRow() { $$('#hTable tbody tr').forEach(tr => tr.classList.toggle('sel', tr.dataset.m === H.metric)); }
+function drawHist() {
+  const box = $('#hHist'); if (!H.data || !box.clientWidth) return;
+  const m = H.metric, r = H.data.rows[m]; if (!r) { box.innerHTML = '<div class="empty">Metric missing in one file.</div>'; return; }
+  const dir = mdir(m), diffs = r.a.map((v, i) => v == null || r.b[i] == null ? null : v - r.b[i]).filter(v => v != null);
+  $('#hHistTitle').textContent = `Per-seed difference (A − B), n = ${diffs.length}`;
+  const cBetter = css('--s1'), cWorse = css('--s2'), cTie = css('--tie');
+  $('#hHistLegend').innerHTML = dir === 0
+    ? `<span><i style="background:${cBetter}"></i>A higher</span><span><i style="background:${cWorse}"></i>B higher</span><span><i style="background:${cTie}"></i>Equal</span>`
+    : `<span><i style="background:${cBetter}"></i>A better</span><span><i style="background:${cWorse}"></i>B better</span><span><i style="background:${cTie}"></i>Tie</span>`;
+  const lo = Math.min(0, ...diffs), hi = Math.max(0, ...diffs);
+  // bins: separate exact-zero bin so ties stay visible
+  const nz = diffs.filter(d => d !== 0), nb = Math.min(30, Math.max(8, Math.ceil(Math.sqrt(diffs.length) * 1.5)));
+  const span = (hi - lo) || 1, w = span / nb, bins = [];
+  for (let i = 0; i < nb; i++) bins.push({ x0: lo + i * w, x1: lo + (i + 1) * w, n: 0, kind: null });
+  nz.forEach(d => { const i = Math.min(nb - 1, Math.floor((d - lo) / w)); bins[i].n++; });
+  bins.forEach(b => { const mid = (b.x0 + b.x1) / 2; const pos = mid > 0; b.kind = dir === 0 ? (pos ? 'b' : 'w') : (pos === (dir > 0) ? 'b' : 'w'); });
+  const ties = diffs.length - nz.length;
+  const W = box.clientWidth, Ht = 240, P = { l: 36, r: 10, t: 10, b: 30 };
+  const xs = nice(lo, hi), x = lin(xs.lo, xs.hi, P.l, W - P.r), ymax = Math.max(ties, ...bins.map(b => b.n), 1), ys = nice(0, ymax, 4), y = lin(0, ys.hi, Ht - P.b, P.t);
+  const s = svgIn(box, W, Ht);
+  ys.ticks.forEach(t => { el('line', { x1: P.l, x2: W - P.r, y1: y(t), y2: y(t), class: 'gridline' }, s); el('text', { x: P.l - 6, y: y(t) + 4, 'text-anchor': 'end' }, s).textContent = t; });
+  xs.ticks.forEach(t => { el('text', { x: x(t), y: Ht - P.b + 16, 'text-anchor': 'middle' }, s).textContent = fmtD(m, t).replace('±', ''); });
+  bins.forEach(b => {
+    if (!b.n) return;
+    const x0 = x(b.x0) + 1, x1 = x(b.x1) - 1, h = Math.max(0, x1 - x0);
+    const rct = el('rect', { x: x0, width: h, y: y(b.n), height: y(0) - y(b.n), rx: Math.min(3, h / 2), fill: b.kind === 'b' ? cBetter : cWorse }, s);
+    const hit = el('rect', { x: x(b.x0), width: x(b.x1) - x(b.x0), y: P.t, height: Ht - P.b - P.t, fill: 'transparent' }, s);
+    hit.onmousemove = ev => showTip(`<b>${fmtD(m, b.x0)} to ${fmtD(m, b.x1)}</b><div>${b.n} seed${b.n > 1 ? 's' : ''}</div>`, ev); hit.onmouseleave = hideTip;
+  });
+  if (ties) {
+    const cx = x(0), bw = Math.max(4, (x(w) - x(0)) * 0.5);
+    const t = el('rect', { x: cx - bw / 2, width: bw, y: y(ties), height: y(0) - y(ties), rx: 2, fill: cTie }, s);
+    t.onmousemove = ev => showTip(`<b>Exact tie (Δ = 0)</b><div>${ties} seeds</div>`, ev); t.onmouseleave = hideTip;
+  }
+  el('line', { x1: x(0), x2: x(0), y1: P.t, y2: Ht - P.b, class: 'zero' }, s);
+  el('line', { x1: P.l, x2: W - P.r, y1: y(0), y2: y(0), class: 'zero' }, s);
+  $('#hHistNote').textContent = `Mean Δ ${fmtD(m, r.diff)}, 95% CI [${fmtD(m, r.ci_lo)}, ${fmtD(m, r.ci_hi)}]` + (r.significant ? ' — excludes 0.' : ' — includes 0.');
+}
+
+// ───────────────────────── all results ─────────────────────────
+let A = { setting: null, metric: 'return', sort: null, sortDir: -1, sel: null, selData: null };
+function initAll() {
+  const settings = [...new Set(RESULTS.map(r => r.setting))];
+  A.setting = settings.find(s => s.startsWith('Test · 20×20')) || settings[0];
+  $('#settingChips').innerHTML = `<span class="chip" data-s="__all">All ${RESULTS.length}</span>` + settings.map(s =>
+    `<span class="chip" data-s="${esc(s)}">${esc(s)} <span class="small">(${RESULTS.filter(r => r.setting === s).length})</span></span>`).join('');
+  $$('#settingChips .chip').forEach(c => c.onclick = () => { A.setting = c.dataset.s; renderAll(); });
+  $('#aMetric').innerHTML = Object.keys(METRICS).map(m => `<option value="${m}">${esc(mlabel(m))}${mdir(m) < 0 ? ' (lower is better)' : ''}</option>`).join('');
+  $('#aMetric').value = A.metric;
+  $('#aMetric').onchange = e => { A.metric = e.target.value; drawAChart(); drawDChart(); };
+  renderAll();
+}
+function visibleResults() { return A.setting === '__all' ? RESULTS.slice() : RESULTS.filter(r => r.setting === A.setting); }
+function renderAll() {
+  $$('#settingChips .chip').forEach(c => c.classList.toggle('on', c.dataset.s === A.setting));
+  renderATable(); drawAChart();
+}
+function renderATable() {
+  let rows = visibleResults();
+  const ms = Object.keys(METRICS);
+  if (A.sort) rows.sort((p, q) => {
+    const k = A.sort, pv = ms.includes(k) ? p.summary[k]?.mean : p[k], qv = ms.includes(k) ? q.summary[k]?.mean : q[k];
+    return (pv > qv ? 1 : pv < qv ? -1 : 0) * A.sortDir;
+  });
+  // best per setting per metric
+  const best = {};
+  for (const r of RESULTS) for (const m of ms) {
+    const d = mdir(m); if (!d || r.summary[m] == null) continue;
+    const k = r.setting + '|' + m, v = r.summary[m].mean;
+    if (best[k] == null || (d > 0 ? v > best[k] : v < best[k])) best[k] = v;
+  }
+  const arrow = k => A.sort === k ? (A.sortDir > 0 ? ' ▲' : ' ▼') : '';
+  let h = `<thead><tr><th></th><th class="l" data-k="name">Policy${arrow('name')}</th>`
+    + (A.setting === '__all' ? `<th class="l" data-k="setting">Setting${arrow('setting')}</th>` : '')
+    + ms.map(m => `<th data-k="${m}" title="${esc(mlabel(m))}">${esc(mlabel(m))}${mdir(m) < 0 ? ' ↓' : ''}${arrow(m)}</th>`).join('') + '</tr></thead><tbody>';
+  for (const r of rows) {
+    const canRender = (r.trained && r.run) || (!r.trained && OPTS.baselines.some(b => b.id === r.label));
+    h += `<tr data-f="${r.file}" class="${A.sel === r.file ? 'sel' : ''}" style="cursor:pointer">
+      <td class="l"><button class="link" data-act="render" ${canRender ? '' : 'disabled title="No checkpoint available for this result"'} title="Render this policy in this result's exact environment">▶</button><button class="link" data-act="cmp" title="Use as A in head-to-head">⇄</button></td>
+      <td class="l">${esc(r.name)}${r.trained ? '' : ' <span class="small">baseline</span>'}</td>`
+      + (A.setting === '__all' ? `<td class="l small">${esc(r.setting)}</td>` : '')
+      + ms.map(m => { const s = r.summary[m]; if (!s) return '<td>—</td>';
+        const isBest = best[r.setting + '|' + m] === s.mean && RESULTS.filter(x => x.setting === r.setting).length > 1;
+        return `<td class="${isBest ? 'best' : ''}" title="95% CI [${fmt(m, s.ci_lo)}, ${fmt(m, s.ci_hi)}] · std ${fmt(m, s.std)}">${fmt(m, s.mean)}<span class="ci">±${fmt(m, (s.ci_hi - s.ci_lo) / 2).replace('%', '')}</span></td>`; }).join('') + '</tr>';
+  }
+  $('#aTable').innerHTML = h + '</tbody>';
+  $$('#aTable th[data-k]').forEach(th => th.onclick = () => { const k = th.dataset.k; A.sortDir = A.sort === k ? -A.sortDir : (k === 'name' || k === 'file' || k === 'setting' ? 1 : -1); A.sort = k; renderATable(); });
+  $$('#aTable tbody tr').forEach(tr => tr.onclick = ev => {
+    const f = tr.dataset.f, act = ev.target.closest('button')?.dataset.act;
+    if (act === 'render') return renderFromResult(f);
+    if (act === 'cmp') return setCompare(f, null);
+    selectResult(f);
+  });
+}
+async function selectResult(f) {
+  A.sel = f; $$('#aTable tbody tr').forEach(tr => tr.classList.toggle('sel', tr.dataset.f === f));
+  try { A.selData = await api('/api/results/' + encodeURIComponent(f)); } catch (e) { A.selData = null; }
+  drawDChart();
+}
+function drawAChart() {
+  const box = $('#aChart'); if (!box.clientWidth) return;
+  const m = A.metric, d = mdir(m), all = A.setting === '__all';
+  const rows = visibleResults().filter(r => r.summary[m]).sort((p, q) => (q.summary[m].mean - p.summary[m].mean) * (d < 0 ? -1 : 1));
+  const W = box.clientWidth, rowH = 24, P = { l: Math.min(260, W * 0.45), r: 16, t: 8, b: 28 }, Ht = P.t + P.b + rows.length * rowH;
+  const lo = Math.min(...rows.map(r => r.summary[m].ci_lo ?? r.summary[m].mean)), hi = Math.max(...rows.map(r => r.summary[m].ci_hi ?? r.summary[m].mean));
+  const xs = nice(lo - (hi - lo) * 0.05, hi + (hi - lo) * 0.05), x = lin(xs.lo, xs.hi, P.l, W - P.r);
+  const s = svgIn(box, W, Ht);
+  xs.ticks.forEach(t => { el('line', { x1: x(t), x2: x(t), y1: P.t, y2: Ht - P.b, class: 'gridline' }, s); el('text', { x: x(t), y: Ht - P.b + 16, 'text-anchor': 'middle' }, s).textContent = fmt(m, t); });
+  rows.forEach((r, i) => {
+    const cy = P.t + i * rowH + rowH / 2, st = r.summary[m], c = css(r.trained ? '--s1' : '--s2');
+    const label = el('text', { x: P.l - 10, y: cy + 4, 'text-anchor': 'end', style: 'fill:var(--text-2)' }, s);
+    label.textContent = (all ? r.name + ' (' + r.short_setting + ')' : r.name).slice(0, 52);
+    el('line', { x1: x(st.ci_lo), x2: x(st.ci_hi), y1: cy, y2: cy, stroke: c, 'stroke-width': 2, 'stroke-linecap': 'round' }, s);
+    el('circle', { cx: x(st.mean), cy, r: 5, fill: c, stroke: css('--surface'), 'stroke-width': 2 }, s);
+    const hit = el('rect', { x: 0, y: cy - rowH / 2, width: W, height: rowH, fill: 'transparent', style: 'cursor:pointer' }, s);
+    hit.onmousemove = ev => showTip(`<b>${esc(r.name)}</b><div class="small">${esc(r.setting)}</div>
+      <div class="r"><span>Mean</span><b>${fmt(m, st.mean)}</b></div><div class="r"><span>95% CI</span><span>[${fmt(m, st.ci_lo)}, ${fmt(m, st.ci_hi)}]</span></div>
+      <div class="r"><span>Std</span><span>${fmt(m, st.std)}</span></div><div class="r"><span>Episodes</span><span>${r.n}</span></div>`, ev);
+    hit.onmouseleave = hideTip; hit.onclick = () => selectResult(r.file);
+  });
+}
+function drawDChart() {
+  const box = $('#dChart'); if (!box.clientWidth) return;
+  if (!A.selData) { box.innerHTML = ''; return; }
+  const m = A.metric, e = A.selData.entry, vals = (A.selData.metrics[m] || []).filter(v => v != null);
+  $('#dTitle').textContent = `${e.name} — ${mlabel(m)}`;
+  $('#dSub').textContent = `${e.setting} · seeds ${e.seed_first}–${e.seed_last}`;
+  if (!vals.length) { box.innerHTML = '<div class="empty">No per-episode data.</div>'; return; }
+  const lo = Math.min(...vals), hi = Math.max(...vals), nb = lo === hi ? 1 : Math.min(30, Math.max(6, Math.ceil(Math.sqrt(vals.length) * 1.5)));
+  const w = (hi - lo) / nb || 1, bins = Array.from({ length: nb }, (_, i) => ({ x0: lo + i * w, x1: lo + (i + 1) * w, n: 0 }));
+  vals.forEach(v => bins[Math.min(nb - 1, Math.floor((v - lo) / w))].n++);
+  const W = box.clientWidth, Ht = 240, P = { l: 36, r: 10, t: 10, b: 30 };
+  const xs = nice(lo, lo === hi ? lo + 1 : hi), x = lin(xs.lo, xs.hi, P.l, W - P.r), ys = nice(0, Math.max(...bins.map(b => b.n)), 4), y = lin(0, ys.hi, Ht - P.b, P.t);
+  const s = svgIn(box, W, Ht), c = css(e.trained ? '--s1' : '--s2');
+  ys.ticks.forEach(t => { el('line', { x1: P.l, x2: W - P.r, y1: y(t), y2: y(t), class: 'gridline' }, s); el('text', { x: P.l - 6, y: y(t) + 4, 'text-anchor': 'end' }, s).textContent = t; });
+  xs.ticks.forEach(t => { el('text', { x: x(t), y: Ht - P.b + 16, 'text-anchor': 'middle' }, s).textContent = fmt(m, t); });
+  bins.forEach(b => {
+    if (!b.n) return;
+    const x0 = x(b.x0) + 1, bw = Math.max(2, x(b.x1) - x(b.x0) - 2);
+    el('rect', { x: x0, width: bw, y: y(b.n), height: y(0) - y(b.n), rx: Math.min(3, bw / 2), fill: c }, s);
+    const hit = el('rect', { x: x(b.x0), width: Math.max(4, x(b.x1) - x(b.x0)), y: P.t, height: Ht - P.b - P.t, fill: 'transparent' }, s);
+    hit.onmousemove = ev => showTip(`<b>${fmt(m, b.x0)} – ${fmt(m, b.x1)}</b><div>${b.n} episode${b.n > 1 ? 's' : ''}</div>`, ev); hit.onmouseleave = hideTip;
+  });
+  const mean = e.summary[m]?.mean;
+  if (mean != null) { el('line', { x1: x(mean), x2: x(mean), y1: P.t, y2: Ht - P.b, class: 'zero', 'stroke-dasharray': '4 3' }, s);
+    el('text', { x: x(mean) + 4, y: P.t + 10, style: 'fill:var(--text)' }, s).textContent = 'mean ' + fmt(m, mean); }
+  el('line', { x1: P.l, x2: W - P.r, y1: y(0), y2: y(0), class: 'zero' }, s);
+}
+
+// ───────────────────────── training ─────────────────────────
+let T = { on: new Set(), metric: 'val_return' };
+function runColor(name) { const i = RUNS.findIndex(r => r.name === name); return css(SERIES[i % SERIES.length]); }
+function initTraining() {
+  const def = ['hw4', 'hw4_s1', 'hw4_s2', 'hw4_up'].filter(n => RUNS.some(r => r.name === n));
+  (def.length ? def : RUNS.slice(0, 4).map(r => r.name)).forEach(n => T.on.add(n));
+  const cols = new Set(); RUNS.forEach(r => Object.keys(r.log).forEach(k => cols.add(k)));
+  ['update', 'env_steps'].forEach(k => cols.delete(k));
+  $('#tMetric').innerHTML = [...cols].map(c => `<option>${c}</option>`).join('');
+  $('#tMetric').value = cols.has('val_return') ? 'val_return' : [...cols][0];
+  T.metric = $('#tMetric').value;
+  $('#tMetric').onchange = e => { T.metric = e.target.value; drawTChart(); };
+  $('#tSmooth').oninput = drawTChart; $('#tBand').onchange = drawTChart;
+  $('#cfgAll').onchange = renderCfg;
+  renderRunChips(); drawTChart(); renderCfg();
+}
+function renderRunChips() {
+  $('#runChips').innerHTML = RUNS.map(r => {
+    const on = T.on.has(r.name);
+    return `<span class="chip ${on ? 'on' : 'off'}" data-r="${r.name}" title="${esc(r.display)}">
+      <span class="sw" style="background:${runColor(r.name)}"></span>${esc(r.display)}</span>`;
+  }).join('');
+  $$('#runChips .chip').forEach(c => c.onclick = () => { const n = c.dataset.r; T.on.has(n) ? T.on.delete(n) : T.on.add(n); renderRunChips(); drawTChart(); renderCfg(); });
+}
+function smooth(pts, k) {
+  if (k <= 1) return pts;
+  return pts.map((p, i) => { let s = 0, c = 0; for (let j = Math.max(0, i - k + 1); j <= i; j++) { s += pts[j].y; c++; } return { ...p, y: s / c }; });
+}
+function drawTChart() {
+  const box = $('#tChart'); if (!box.clientWidth) return;
+  const m = T.metric, k = +$('#tSmooth').value, band = $('#tBand').checked && m === 'val_return';
+  const series = RUNS.filter(r => T.on.has(r.name) && r.log[m]).map(r => {
+    const xs = r.log.env_steps || r.log.update, raw = [];
+    r.log[m].forEach((v, i) => { if (v != null && xs[i] != null) raw.push({ x: xs[i], y: v, i }); });
+    return { r, raw, pts: smooth(raw, k), c: runColor(r.name) };
+  }).filter(s => s.pts.length);
+  const sparse = series.some(s => s.raw.length < (s.r.log.env_steps || []).length * 0.6);
+  $('#tNote').textContent = series.length ? `${series.map(s => s.raw.length).reduce((a, b) => a + b, 0)} points` + (sparse ? ' · logged at eval intervals only' : '') : '';
+  if (!series.length) { box.innerHTML = '<div class="empty">No selected run logs this column.</div>'; return; }
+  const W = box.clientWidth, Ht = 360, P = { l: 52, r: 16, t: 12, b: 34 };
+  let ylo = Infinity, yhi = -Infinity, xhi = 0;
+  series.forEach(s => { s.pts.forEach(p => { ylo = Math.min(ylo, p.y); yhi = Math.max(yhi, p.y); xhi = Math.max(xhi, p.x); });
+    if (band) s.raw.forEach(p => { const l = s.r.log.val_lo[p.i], h = s.r.log.val_hi[p.i]; if (l != null) ylo = Math.min(ylo, l); if (h != null) yhi = Math.max(yhi, h); }); });
+  const xsN = nice(0, xhi), ysN = nice(ylo, yhi), x = lin(xsN.lo, xsN.hi, P.l, W - P.r), y = lin(ysN.lo, ysN.hi, Ht - P.b, P.t);
+  const s = svgIn(box, W, Ht);
+  ysN.ticks.forEach(t => { el('line', { x1: P.l, x2: W - P.r, y1: y(t), y2: y(t), class: 'gridline' }, s); el('text', { x: P.l - 8, y: y(t) + 4, 'text-anchor': 'end' }, s).textContent = tickFmt(t); });
+  xsN.ticks.forEach(t => { el('text', { x: x(t), y: Ht - P.b + 18, 'text-anchor': 'middle' }, s).textContent = tickFmt(t); });
+  el('text', { x: (P.l + W - P.r) / 2, y: Ht - 2, 'text-anchor': 'middle' }, s).textContent = 'environment steps';
+  const usedY = [];
+  series.forEach(se => {
+    if (band) {
+      const b = se.raw.filter(p => se.r.log.val_lo[p.i] != null);
+      if (b.length > 1) el('path', { d: 'M' + b.map(p => `${x(p.x)},${y(se.r.log.val_hi[p.i])}`).join('L') + 'L' + b.slice().reverse().map(p => `${x(p.x)},${y(se.r.log.val_lo[p.i])}`).join('L') + 'Z', fill: se.c, opacity: 0.12 }, s);
+    }
+    el('path', { d: 'M' + se.pts.map(p => `${x(p.x)},${y(p.y)}`).join('L'), fill: 'none', stroke: se.c, 'stroke-width': 2, 'stroke-linejoin': 'round' }, s);
+    if (sparse && se.pts.length < 80) se.pts.forEach(p => el('circle', { cx: x(p.x), cy: y(p.y), r: 2.5, fill: se.c }, s));
+    const last = se.pts[se.pts.length - 1], ly = y(last.y) - 6;
+    if (series.length <= 4 && !usedY.some(u => Math.abs(u - ly) < 13) && usedY.push(ly)) el('text', { x: Math.min(x(last.x) + 4, W - 4), y: ly, 'text-anchor': x(last.x) > W - 60 ? 'end' : 'start', style: 'fill:var(--text-2)' }, s).textContent = series.length > 1 ? se.r.display : '';
+  });
+  const cross = el('line', { y1: P.t, y2: Ht - P.b, stroke: css('--text-2'), 'stroke-dasharray': '3 3', visibility: 'hidden' }, s);
+  const dots = series.map(se => el('circle', { r: 4, fill: se.c, stroke: css('--surface'), 'stroke-width': 2, visibility: 'hidden' }, s));
+  const hit = el('rect', { x: P.l, y: P.t, width: W - P.l - P.r, height: Ht - P.t - P.b, fill: 'transparent' }, s);
+  hit.onmousemove = ev => {
+    const rect = s.getBoundingClientRect(), px = (ev.clientX - rect.left) * (W / rect.width), xv = xsN.lo + (px - P.l) / (W - P.l - P.r) * (xsN.hi - xsN.lo);
+    let html = `<b>${tickFmt(Math.round(xv))} steps</b> · ${esc(m)}`;
+    cross.setAttribute('x1', px); cross.setAttribute('x2', px); cross.setAttribute('visibility', 'visible');
+    series.forEach((se, j) => {
+      let best = null; for (const p of se.pts) if (best == null || Math.abs(p.x - xv) < Math.abs(best.x - xv)) best = p;
+      const near = best && Math.abs(best.x - xv) < (xsN.hi - xsN.lo) * 0.04;
+      dots[j].setAttribute('visibility', near ? 'visible' : 'hidden');
+      if (near) { dots[j].setAttribute('cx', x(best.x)); dots[j].setAttribute('cy', y(best.y));
+        const ci = band && se.r.log.val_lo[best.i] != null ? ` <span class="small">[${se.r.log.val_lo[best.i].toFixed(1)}, ${se.r.log.val_hi[best.i].toFixed(1)}]</span>` : '';
+        html += `<div class="r"><span><span class="sw" style="background:${se.c}"></span>${esc(se.r.display)}</span><span><b>${(+best.y.toPrecision(5))}</b>${ci}</span></div>`; }
+    });
+    showTip(html, ev);
+  };
+  hit.onmouseleave = () => { hideTip(); cross.setAttribute('visibility', 'hidden'); dots.forEach(d => d.setAttribute('visibility', 'hidden')); };
+}
+function flat(o, pre = '', out = {}) { for (const k in o) { const v = o[k], key = pre ? pre + '.' + k : k; if (v && typeof v === 'object' && !Array.isArray(v)) flat(v, key, out); else out[key] = Array.isArray(v) ? JSON.stringify(v) : String(v); } return out; }
+function renderCfg() {
+  const runs = RUNS.filter(r => T.on.has(r.name)); if (!runs.length) { $('#cfgTable').innerHTML = ''; return; }
+  const fl = runs.map(r => flat(r.config)), keys = [...new Set(fl.flatMap(Object.keys))].sort();
+  const single = runs.length === 1, showAll = single || $('#cfgAll').checked;
+  $('#cfgAllWrap').hidden = single; $('#cfgTitle').textContent = single ? 'Training configuration' : 'Config differences';
+  let h = `<thead><tr><th class="l">Key</th>${runs.map(r => `<th class="l"><span class="sw" style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${runColor(r.name)}"></span> ${esc(single ? 'Value' : r.display)}</th>`).join('')}</tr></thead><tbody>`;
+  let n = 0;
+  for (const k of keys) {
+    const vals = fl.map(f => f[k] ?? '—'), diff = new Set(vals).size > 1;
+    if (!diff && !showAll) continue; n++;
+    h += `<tr><td class="l mono">${esc(k)}</td>${vals.map(v => `<td class="l mono ${diff && !single ? 'diff' : ''}">${esc(v)}</td>`).join('')}</tr>`;
+  }
+  if (!n) h += `<tr><td class="l small" colspan="${runs.length + 1}">Selected runs have identical configs${runs.length < 2 ? ' (select 2+ runs to compare)' : ''}.</td></tr>`;
+  $('#cfgTable').innerHTML = h + '</tbody>';
+}
+
+// ───────────────────────── generator ─────────────────────────
+let G = { source: 'checkpoint', jobs: [] };
+function initGen() {
+  const o = OPTS;
+  $('#gRun').innerHTML = o.runs.map(r => `<option value="${r.name}">${esc(r.display)}</option>`).join('');
+  $('#gRun').value = o.runs.some(r => r.name === 'hw4') ? 'hw4' : o.runs[0]?.name;
+  $('#gPolicy').innerHTML = o.baselines.map(b => `<option value="${b.id}">${esc(b.name)}</option>`).join('');
+  $('#gInfo').innerHTML = o.info_modes.map(m => `<option>${m}</option>`).join('');
+  $('#gVariant').innerHTML = o.variants.map(v => `<option>${v}</option>`).join('');
+  $('#gResult').innerHTML = resultOptions();
+  $$('#gSource button').forEach(b => b.onclick = () => setSource(b.dataset.v));
+  $$('[data-seed]').forEach(b => b.onclick = () => { $('#gSeed').value = b.dataset.seed === 'rand' ? Math.floor(Math.random() * 100000) : b.dataset.seed; });
+  ['#gRun', '#gEnv', '#gResult', '#gView', '#gPolicy'].forEach(s => $(s).addEventListener('change', syncGen));
+  $('#gRun').addEventListener('change', fillCkpt);
+  $('#gGo').onclick = () => submitJob(readForm());
+  setSource('checkpoint'); fillCkpt();
+}
+function fillCkpt() { const r = OPTS.runs.find(r => r.name === $('#gRun').value); $('#gCkpt').innerHTML = (r?.checkpoints || []).map(c => `<option value="${c}">${c === 'best.pt' ? 'Best (top validation)' : c === 'latest.pt' ? 'Final' : esc(c)}</option>`).join(''); }
+function setSource(v) {
+  G.source = v; $$('#gSource button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
+  const prev = $('#gEnv').value, st = OPTS.stages;
+  $('#gEnv').innerHTML = (v === 'checkpoint' ? '<option value="checkpoint">Checkpoint\'s own training env</option>' : '')
+    + Object.entries(st).map(([s, c]) => `<option value="stage:${s}">${c.height}×${c.width} map, ${c.n_agents} robots, ${c.max_steps} steps (curriculum stage ${s})</option>`).join('')
+    + '<option value="result">Exactly as in an evaluation above…</option>';
+  $('#gEnv').value = [...$('#gEnv').options].some(o => o.value === prev) ? prev : (v === 'checkpoint' ? 'checkpoint' : 'stage:4');
+  syncGen();
+}
+function syncGen() {
+  const ck = G.source === 'checkpoint', env = $('#gEnv').value;
+  $$('.g-ck').forEach(e => e.hidden = !ck); $$('.g-bl').forEach(e => e.hidden = ck);
+  $$('.g-res').forEach(e => e.hidden = env !== 'result');
+  $$('.g-im').forEach(e => e.hidden = !(G.source === 'baseline' && env.startsWith('stage:')));
+  $$('.g-agent').forEach(e => e.hidden = $('#gView').value === 'true');
+  const pol = $('#gPolicy').value; $('#gMemory').parentElement.hidden = ck || !['scripted', 'nearest_goal', 'random_goal'].includes(pol);
+  let note = '';
+  if (env.startsWith('stage:')) {
+    const c = OPTS.stages[env.split(':')[1]];
+    note = `Curriculum env as currently defined in stages.py: ${c.height}×${c.width}, ${c.n_agents} robots. The 20×20 evaluations above used 4 robots — pick "Exactly as in an evaluation above" to reproduce one precisely.`;
+    if (ck) { const r = OPTS.runs.find(r => r.name === $('#gRun').value); if (r && r.stage != env.split(':')[1]) note += ` The model was trained on ${r.grid} with ${r.n_agents} robots, so this is a zero-shot transfer.`; }
+  } else if (env === 'checkpoint') note = 'Uses the env config saved inside the checkpoint — the setting it was trained on.';
+  else note = 'Uses the exact environment config that evaluation was run with.';
+  $('#gEnvNote').textContent = note;
+}
+function readForm() {
+  const env = $('#gEnv').value, p = { source: G.source };
+  if (G.source === 'checkpoint') { p.run = $('#gRun').value; p.ckpt = $('#gCkpt').value; } else { p.policy = $('#gPolicy').value; p.memory = $('#gMemory').checked; }
+  if (env === 'checkpoint') p.env = 'checkpoint';
+  else if (env === 'result') { p.env = 'result'; p.result = $('#gResult').value; }
+  else { p.env = 'stage'; p.stage = +env.split(':')[1]; p.info_mode = $('#gInfo').value; }
+  Object.assign(p, { variant: $('#gVariant').value, seed: +$('#gSeed').value || 0, steps: +$('#gSteps').value || 0, fps: +$('#gFps').value || 10,
+    view: $('#gView').value, agent: +$('#gAgent').value || 0, fog: $('#gFog').checked, goals: $('#gGoals').checked });
+  return p;
+}
+function renderFromResult(file) {
+  const r = RESULTS.find(x => x.file === file); if (!r) return;
+  if (r.trained) { setSource('checkpoint'); $('#gRun').value = r.run; fillCkpt(); $('#gCkpt').value = 'best.pt'; }
+  else { setSource('baseline'); $('#gPolicy').value = r.label; }
+  $('#gEnv').value = 'result'; $('#gResult').value = file; $('#gSeed').value = r.seed_first ?? 20000; $('#gVariant').value = 'default';
+  syncGen();
+  document.getElementById('generate').scrollIntoView({ behavior: 'smooth' });
+  $('#genCard').classList.remove('flash'); void $('#genCard').offsetWidth; $('#genCard').classList.add('flash');
+  submitJob(readForm());
+}
+async function submitJob(p) {
+  const btn = $('#gGo'); btn.disabled = true;
+  try {
+    const job = await api('/api/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p) });
+    if (!G.jobs.some(j => j.id === job.id)) G.jobs.unshift(job); else Object.assign(G.jobs.find(j => j.id === job.id), job);
+    renderJobs(); if (job.status !== 'done' && job.status !== 'error') pollJob(job.id); else if (job.status === 'done') loadGallery();
+  } catch (e) {
+    G.jobs.unshift({ id: 'err' + Date.now(), status: 'error', error: e.message, title: 'Request rejected' }); renderJobs();
+  } finally { btn.disabled = false; }
+}
+async function pollJob(id) {
+  while (true) {
+    await new Promise(r => setTimeout(r, 1000));
+    let j; try { j = await api('/api/jobs/' + id); } catch { continue; }
+    const slot = G.jobs.find(x => x.id === id); Object.assign(slot, j); renderJobs();
+    if (j.status === 'done') { loadGallery(); return; }
+    if (j.status === 'error') return;
+  }
+}
+function renderJobs() {
+  if (!G.jobs.length) return;
+  $('#jobs').innerHTML = G.jobs.map(j => {
+    let body;
+    if (j.status === 'done') body = `<div class="img"><img src="${j.url}" alt="${esc(j.title)}"></div>`;
+    else if (j.status === 'error') body = `<div class="img" style="background:var(--surface-2)"><div class="status err">✕ ${esc(j.error)}</div></div>`;
+    else {
+      const label = j.status === 'queued' ? `Queued (#${j.position} in line)` : j.status === 'loading' ? 'Loading policy & environment…' : `Rolling out… ${Math.round((j.progress || 0) * 100)}%`;
+      body = `<div class="img" style="background:var(--surface-2);flex-direction:column;gap:10px"><div class="bar"><div style="width:${Math.round((j.progress || 0) * 100)}%"></div></div><div class="status">${label}</div>${j.detail ? `<div class="status small">${esc(j.detail)}</div>` : ''}</div>`;
+    }
+    const st = j.stats ? `<div class="small">${j.stats.env ? esc(j.stats.env) + ' · ' : ''}return ${j.stats.return != null ? (+j.stats.return).toFixed(1) : '—'} · ${j.stats.deliveries ?? '—'} deliveries · ${j.stats.t ?? '—'} steps${j.seconds ? ` · rendered in ${j.seconds}s` : ''}${j.cached ? ' · cached' : ''}</div>` : '';
+    return `<div class="gif">${body}<div class="cap"><div class="t">${esc(j.title)}</div>${st}
+      ${j.status === 'done' ? `<div class="acts"><a href="${j.url}" download="${esc(fileName(j.title))}">Download</a><a href="${j.url}" target="_blank">Open full size</a></div>` : ''}</div></div>`;
+  }).join('');
+}
+
+// ───────────────────────── gallery ─────────────────────────
+let GAL = { gifs: [], f: 'all' };
+$$('#galFilter .chip').forEach(c => c.onclick = () => { GAL.f = c.dataset.f; $$('#galFilter .chip').forEach(x => x.classList.toggle('on', x === c)); renderGallery(); });
+async function loadGallery() { try { GAL.gifs = (await api('/api/gifs')).gifs; renderGallery(); } catch {} }
+function renderGallery() {
+  const g = GAL.gifs.filter(x => GAL.f === 'all' || (GAL.f === 'gen') === x.generated);
+  if (!g.length) { $('#gal').innerHTML = `<div class="empty">${GAL.f === 'gen' ? 'Nothing generated yet.' : 'No GIFs found.'}</div>`; return; }
+  $('#gal').innerHTML = g.map(x => {
+    const t = x.params?.title || x.caption, s = x.params?.stats;
+    return `<div class="gif"><div class="img"><img loading="lazy" src="${x.url}" alt="${esc(t)}"></div><div class="cap">
+      <div class="t">${esc(t)}</div><div class="small">${x.generated ? 'Generated' : 'Pre-rendered'} · ${(x.size / 1048576).toFixed(1)} MB</div>
+      ${s ? `<div class="small">return ${s.return != null ? (+s.return).toFixed(1) : '—'} · ${s.deliveries ?? '—'} deliveries${s.env ? ' · ' + esc(s.env) : ''}</div>` : ''}
+      <div class="acts"><a href="${x.url}" download="${esc(fileName(t))}">Download</a><a href="${x.url}" target="_blank">Open</a>
+      ${x.generated ? `<button class="link" data-del="${esc(x.name)}" style="color:var(--bad)">Delete</button>` : ''}</div></div></div>`;
+  }).join('');
+  $$('#gal [data-del]').forEach(b => b.onclick = async () => {
+    if (!confirm('Delete this generated GIF?')) return;
+    await fetch('/api/gifs/generated/' + encodeURIComponent(b.dataset.del), { method: 'DELETE' }); loadGallery();
+  });
+}
+</script>
+</body>
+</html>

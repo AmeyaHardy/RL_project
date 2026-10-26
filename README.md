@@ -58,16 +58,32 @@ Across paired benchmark evaluations on held-out validation and test seed splits 
 ├── tests/
 │   ├── test_suite.py           # 33 unit tests (environment, masks, invariants, determinism)
 │   └── test_hier.py            # Hierarchical policy validation & comparison script
-├── runs/                       # Trained model checkpoints & logs
-│   ├── hw4/best.pt             # Best trained Stage 4 H-MAPPO model (window mode)
-│   ├── h5/best.pt              # Best trained Stage 5 H-MAPPO model (30x30, 5 robots)
-│   ├── hw2/best.pt             # Stage 2 checkpoint
-│   └── hw4_up/                 # Stage 4 checkpoint with updated coordination weights
-├── res/                        # Evaluation metric outputs (JSON) across all test runs
+├── runs/                       # Trained checkpoints (best.pt / latest.pt), config.json & training log per run
+│   ├── hw4/                    # Main H-MAPPO model: stage 4 (20x20, 4 robots), window comms
+│   ├── hw4_s1/, hw4_s2/        # Stage 4 trained from scratch (no warm start), seeds 1 and 2
+│   ├── hw4_up/                 # Stage 4, warm-started from hw2_up
+│   ├── h5/                     # Stage 5 (30x30, 5 robots), warm-started from hw4_up
+│   ├── hw2/, hw2_up/           # Stage 2 (12x12, 1 robot) warm-start checkpoints
+│   └── _selftest/              # Tiny smoke-test run
+├── res/                        # Evaluation outputs (JSON): per-episode metrics + bootstrap summaries
 ├── viz/                        # Pre-rendered evaluation episodes (GIFs)
+├── viz_server.py               # Local results page server + on-demand GIF generator
+├── results.html                # Results page served by viz_server.py
 ├── requirements.txt            # Python dependencies
 └── README.md
 ```
+
+---
+
+## Local Results Page & GIF Generator
+
+Browse the H-MAPPO results against baselines, its training log, and render new episode GIFs on demand from its weights (`best.pt` / `latest.pt`) or any baseline — all served locally:
+
+```bash
+python viz_server.py            # opens http://127.0.0.1:8080
+```
+
+Generated GIFs are cached in `viz/generated/` (git-ignored). The page features one trained model; which run and result files are shown is set by `FEATURED_RUNS` / `FEATURED_RESULTS` at the top of `viz_server.py`.
 
 ---
 
@@ -180,18 +196,16 @@ python -m swarm_search.visualize \
 ### 4. Training
 
 #### Train Hierarchical MAPPO (H-MAPPO)
+The main model (`runs/hw4`) was trained in two steps: a stage 2 warm start, then stage 4. All other options use the `train_h` defaults (8 envs, 512-step rollouts, lr 3e-4, `--w-stale-cov 0.3`, `--w-overlap 0.02`, `--w-sync 0.25`).
 ```bash
-python -m swarm_search.train_h \
-  --stage 4 \
-  --info-mode window \
-  --total-steps 300000 \
-  --n-envs 8 \
-  --rollout 128 \
-  --lr 3e-4 \
-  --w-stale-cov 0.1 \
-  --w-overlap 0.2 \
-  --out runs/my_run
+# 1) Stage 2 warm start (12x12, 1 robot)
+python -m swarm_search.train_h --stage 2 --info-mode window --total-steps 300000 --out runs/my_hw2
+
+# 2) Stage 4 (20x20), actor initialised from step 1
+python -m swarm_search.train_h --stage 4 --info-mode window --total-steps 1000000 \
+  --init-actor-from runs/my_hw2/best.pt --ref res/greedy_window_mem.json --out runs/my_hw4
 ```
+Each run writes `best.pt`, `latest.pt`, `config.json` and a log CSV to its `--out` directory. Add `--selftest` for a quick smoke run.
 
 #### Train Flat MAPPO
 ```bash
@@ -211,7 +225,7 @@ python -m swarm_search.train \
 To prevent data contamination and ensure rigorous scientific evaluation:
 - **Disjoint Seed Splits**:
   - `val`: Seeds `10,000` to `10,049` (held-out for model selection & hyperparameter tuning)
-  - `test`: Seeds `20,000` to `20,099` (held-out for final test benchmarks)
+  - `test`: Seeds starting at `20,000` (held-out for final test benchmarks; 100 episodes by default, the saved test results use 300: `20,000`–`20,299`)
   - `train`: Dynamically generated starting from seed `100,000`+
 - **Bootstrap 95% Confidence Intervals**: Every evaluation computes non-parametric bootstrap confidence intervals across paired episodes ($A - B$) so map variation is controlled.
 
@@ -225,3 +239,4 @@ To prevent data contamination and ensure rigorous scientific evaluation:
 - `numpy >= 1.24.0`
 - `matplotlib >= 3.7.0`
 - `pillow >= 10.0.0`
+- `flask >= 3.0.0` (only for the local results page)
